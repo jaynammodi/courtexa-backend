@@ -1,0 +1,539 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>eCourts Scraper v2</title>
+    <style>
+      body {
+        font-family:
+          -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica,
+          Arial, sans-serif;
+        max-width: 800px;
+        margin: 0 auto;
+        padding: 20px;
+        line-height: 1.6;
+      }
+      h1 {
+        border-bottom: 2px solid #eee;
+        padding-bottom: 10px;
+      }
+      .card {
+        border: 1px solid #ddd;
+        border-radius: 8px;
+        padding: 20px;
+        margin-bottom: 20px;
+        background: #fafafa;
+      }
+      label {
+        display: block;
+        margin-bottom: 5px;
+        font-weight: bold;
+      }
+      input[type="text"],
+      select {
+        width: 100%;
+        padding: 8px;
+        margin-bottom: 15px;
+        border: 1px solid #ccc;
+        border-radius: 4px;
+        box-sizing: border-box;
+      }
+      button {
+        background: #0070f3;
+        color: white;
+        border: none;
+        padding: 10px 20px;
+        border-radius: 4px;
+        cursor: pointer;
+        font-size: 16px;
+      }
+      button:disabled {
+        background: #ccc;
+      }
+      .hidden {
+        display: none;
+      }
+      .error {
+        color: red;
+        background: #fff0f0;
+        padding: 10px;
+        border-radius: 4px;
+        border: 1px solid #ffcdd2;
+        margin-top: 10px;
+      }
+      .case-item {
+        padding: 10px;
+        border-bottom: 1px solid #eee;
+        cursor: pointer;
+      }
+      .case-item:hover {
+        background-color: #f0f0f0;
+      }
+
+      /* Status Badge Styles */
+      .status-badge {
+        display: inline-block;
+        padding: 2px 8px;
+        border-radius: 12px;
+        font-size: 12px;
+        font-weight: bold;
+        background: #e0e0e0;
+        color: #333;
+        margin-left: 10px;
+      }
+      .status-CAPTCHA_REQUIRED {
+        background: #fff9c4;
+        color: #f57f17;
+      }
+      .status-CASE_LIST_LOADED {
+        background: #e1bee7;
+        color: #4a148c;
+      }
+      .status-HISTORY_FETCHED,
+      .status-SEARCH_SUBMITTED {
+        background: #e8f5e9;
+        color: #2e7d32;
+      }
+      .status-FAILED {
+        background: #ffebee;
+        color: #c62828;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>
+      eCourts Scraper v2
+      <span id="main-status" class="status-badge hidden"></span>
+    </h1>
+
+    <!-- Step 1: Initialization -->
+    <div id="step-init" class="card">
+      <h3>Start New Session</h3>
+
+      <label>Search Mode</label>
+      <select id="search-mode" onchange="toggleForm()">
+        <option value="cnr">Search by CNR</option>
+        <option value="party">Search by Party Name</option>
+        <option value="advocate">Search by Advocate Name</option>
+      </select>
+
+      <!-- CNR Form -->
+      <div id="form-cnr">
+        <label>CNR Number</label>
+        <input
+          type="text"
+          id="cnr-input"
+          placeholder="e.g. UTDD010001262024"
+          value="UTDD010001262024"
+        />
+      </div>
+
+      <!-- Party Form -->
+      <div id="form-party" class="hidden">
+        <label>Party Name (min 3 chars)</label>
+        <input type="text" id="party-name" placeholder="Name" />
+        <label>Registration Year</label>
+        <input type="text" id="reg-year" placeholder="YYYY" value="2024" />
+      </div>
+
+      <!-- Advocate Form -->
+      <div id="form-advocate" class="hidden">
+        <label>Advocate Name</label>
+        <input type="text" id="adv-name" placeholder="Name" />
+      </div>
+
+      <!-- Shared Location Fields (Party/Advocate) -->
+      <div id="form-location" class="hidden">
+        <label>State</label>
+        <select id="state-select" onchange="loadDistricts()">
+          <option>Loading...</option>
+        </select>
+
+        <label>District</label>
+        <select id="dist-select" onchange="loadComplexes()" disabled>
+          <option>Select State First</option>
+        </select>
+
+        <label>Court Complex</label>
+        <select id="complex-select" disabled>
+          <option>Select District First</option>
+        </select>
+
+        <label>Case Status</label>
+        <select id="case-status">
+          <option value="Both">Both</option>
+          <option value="Pending">Pending</option>
+          <option value="Disposed">Disposed</option>
+        </select>
+      </div>
+
+      <button id="btn-start" onclick="startSession()">Start Scraping</button>
+      <div id="error-init" class="error hidden"></div>
+    </div>
+
+    <!-- Step 2: Captcha -->
+    <div id="step-captcha" class="card hidden">
+      <h3>Security Check</h3>
+      <div style="text-align: center">
+        <img
+          id="captcha-img"
+          src=""
+          alt="Captcha"
+          style="border: 1px solid #ccc"
+        />
+        <br /><button
+          onclick="loadCaptcha()"
+          style="margin-top: 5px; padding: 5px; font-size: 12px"
+        >
+          Refresh
+        </button>
+      </div>
+      <label>Captcha Code</label>
+      <input type="text" id="captcha-input" placeholder="Enter code" />
+      <button id="btn-submit-captcha" onclick="submitCaptcha()">Submit</button>
+      <div id="error-captcha" class="error hidden"></div>
+    </div>
+
+    <!-- Step 3: Loading -->
+    <div id="step-loading" class="card hidden">
+      <h3>Processing...</h3>
+      <p>Please wait while we communicate with eCourts...</p>
+    </div>
+
+    <!-- Step 4: Case List (Party/Advocate) -->
+    <div id="step-list" class="card hidden">
+      <h3>Select a Case</h3>
+      <div
+        id="case-list-container"
+        style="max-height: 300px; overflow-y: auto"
+      ></div>
+    </div>
+
+    <!-- Step 5: Result -->
+    <div id="step-result" class="card hidden">
+      <h3>Case Details</h3>
+      <div id="result-content"></div>
+    </div>
+
+    <script>
+      const API_BASE = "http://localhost:8000";
+      let sessionId = null;
+      let pollInterval = null;
+
+      // --- Initialization ---
+      async function loadStates() {
+        try {
+          const res = await fetch(`${API_BASE}/meta/states`);
+          const data = await res.json();
+          const sel = document.getElementById("state-select");
+          sel.innerHTML = '<option value="">Select State</option>';
+          data.states.forEach((s) => {
+            sel.innerHTML += `<option value="${s.value}">${s.text}</option>`;
+          });
+        } catch (e) {
+          console.error(e);
+        }
+      }
+
+      async function loadDistricts() {
+        const stateCode = document.getElementById("state-select").value;
+        const distSel = document.getElementById("dist-select");
+        distSel.innerHTML = "<option>Loading...</option>";
+        distSel.disabled = true;
+
+        if (!stateCode) return;
+
+        try {
+          const res = await fetch(`${API_BASE}/meta/districts/${stateCode}`);
+          const data = await res.json();
+          distSel.innerHTML = '<option value="">Select District</option>';
+          data.districts.forEach((d) => {
+            distSel.innerHTML += `<option value="${d.value}">${d.text}</option>`;
+          });
+          distSel.disabled = false;
+        } catch (e) {
+          console.error(e);
+        }
+      }
+
+      async function loadComplexes() {
+        const stateCode = document.getElementById("state-select").value;
+        const distCode = document.getElementById("dist-select").value;
+        const compSel = document.getElementById("complex-select");
+        compSel.innerHTML = "<option>Loading...</option>";
+        compSel.disabled = true;
+
+        if (!stateCode || !distCode) return;
+
+        try {
+          const res = await fetch(
+            `${API_BASE}/meta/complexes/${stateCode}/${distCode}`,
+          );
+          const data = await res.json();
+          compSel.innerHTML = '<option value="">Select Complex</option>';
+          data.complexes.forEach((c) => {
+            compSel.innerHTML += `<option value="${c.value}">${c.text}</option>`;
+          });
+          compSel.disabled = false;
+        } catch (e) {
+          console.error(e);
+        }
+      }
+
+      function toggleForm() {
+        const mode = document.getElementById("search-mode").value;
+        document
+          .getElementById("form-cnr")
+          .classList.toggle("hidden", mode !== "cnr");
+        document
+          .getElementById("form-party")
+          .classList.toggle("hidden", mode !== "party");
+        document
+          .getElementById("form-advocate")
+          .classList.toggle("hidden", mode !== "advocate");
+        document
+          .getElementById("form-location")
+          .classList.toggle("hidden", mode === "cnr");
+
+        if (mode !== "cnr") {
+          // Load states if not loaded
+          if (document.getElementById("state-select").options.length <= 1)
+            loadStates();
+        }
+      }
+
+      // --- Flow Logic ---
+      async function startSession() {
+        const mode = document.getElementById("search-mode").value;
+        const payload = { search_mode: mode };
+
+        if (mode === "cnr") {
+          payload.cnr = document.getElementById("cnr-input").value.trim();
+        } else {
+          payload.state_code = document.getElementById("state-select").value;
+          payload.dist_code = document.getElementById("dist-select").value;
+          payload.court_complex_code =
+            document.getElementById("complex-select").value;
+          payload.case_status = document.getElementById("case-status").value;
+
+          if (mode === "party") {
+            payload.party_name = document
+              .getElementById("party-name")
+              .value.trim();
+            payload.registration_year = document
+              .getElementById("reg-year")
+              .value.trim();
+          } else {
+            payload.advocate_name = document
+              .getElementById("adv-name")
+              .value.trim();
+          }
+        }
+
+        document.getElementById("btn-start").disabled = true;
+        hideError("init");
+
+        try {
+          const res = await fetch(`${API_BASE}/cases/start`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          });
+          if (!res.ok)
+            throw new Error((await res.json()).detail || "Start failed");
+
+          const data = await res.json();
+          sessionId = data.session_id;
+
+          document.getElementById("step-init").classList.add("hidden");
+          document.getElementById("step-captcha").classList.remove("hidden");
+          loadCaptcha();
+          startPolling();
+        } catch (e) {
+          showError("init", e.message);
+        } finally {
+          document.getElementById("btn-start").disabled = false;
+        }
+      }
+
+      function loadCaptcha() {
+        if (!sessionId) return;
+        document.getElementById("captcha-img").src =
+          `${API_BASE}/cases/captcha/${sessionId}?t=${Date.now()}`;
+        document.getElementById("captcha-input").value = "";
+      }
+
+      async function submitCaptcha() {
+        const code = document.getElementById("captcha-input").value.trim();
+        if (!code) return;
+
+        document.getElementById("btn-submit-captcha").disabled = true;
+        hideError("captcha");
+
+        try {
+          const res = await fetch(`${API_BASE}/cases/captcha/${sessionId}`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ captcha: code }),
+          });
+          if (!res.ok)
+            throw new Error((await res.json()).detail || "Captcha failed");
+
+          document.getElementById("step-captcha").classList.add("hidden");
+          document.getElementById("step-loading").classList.remove("hidden");
+        } catch (e) {
+          showError("captcha", e.message);
+          if (e.message.includes("Invalid Captcha")) loadCaptcha();
+        } finally {
+          document.getElementById("btn-submit-captcha").disabled = false;
+        }
+      }
+
+      async function startPolling() {
+        if (pollInterval) clearInterval(pollInterval);
+        pollInterval = setInterval(async () => {
+          if (!sessionId) return;
+          try {
+            const res = await fetch(`${API_BASE}/cases/status/${sessionId}`);
+            const data = await res.json();
+
+            const badge = document.getElementById("main-status");
+            badge.innerText = data.state;
+            badge.className = `status-badge status-${data.state} hidden`; // unhide below
+            badge.classList.remove("hidden");
+
+            if (data.state === "FAILED") {
+              clearInterval(pollInterval);
+              resetUI();
+              showError("init", `Failed: ${data.last_error}`);
+              if (data.last_error && data.last_error.includes("Captcha")) {
+                // Handle captcha retry flow
+                document.getElementById("step-init").classList.add("hidden");
+                document
+                  .getElementById("step-captcha")
+                  .classList.remove("hidden");
+                showError("captcha", data.last_error);
+                loadCaptcha();
+              }
+            } else if (data.state === "CAPTCHA_REQUIRED") {
+              // Backend might reset to this if captcha failed silently or needs retry
+              document.getElementById("step-loading").classList.add("hidden");
+              document
+                .getElementById("step-captcha")
+                .classList.remove("hidden");
+            } else if (data.state === "CASE_LIST_LOADED") {
+              clearInterval(pollInterval);
+              loadCaseList();
+            } else if (
+              ["SEARCH_SUBMITTED", "HISTORY_FETCHED", "COMPLETED"].includes(
+                data.state,
+              )
+            ) {
+              clearInterval(pollInterval);
+              loadResult();
+            }
+          } catch (e) {
+            console.error(e);
+          }
+        }, 2000);
+      }
+
+      async function loadCaseList() {
+        document.getElementById("step-loading").classList.add("hidden");
+        document.getElementById("step-list").classList.remove("hidden");
+
+        const res = await fetch(`${API_BASE}/cases/list/${sessionId}`);
+        const data = await res.json();
+        const container = document.getElementById("case-list-container");
+        container.innerHTML = "";
+
+        if (data.cases.length === 0) {
+          container.innerHTML = "<p>No cases found.</p>";
+          return;
+        }
+
+        data.cases.forEach((c) => {
+          const div = document.createElement("div");
+          div.className = "case-item";
+          div.innerText = c.display; // "index | Pet vs Res"
+          div.onclick = () => selectCase(c.index);
+          container.appendChild(div);
+        });
+      }
+
+      async function selectCase(index) {
+        document.getElementById("step-list").classList.add("hidden");
+        document.getElementById("step-loading").classList.remove("hidden");
+
+        try {
+          const res = await fetch(
+            `${API_BASE}/cases/select-case/${sessionId}`,
+            {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ case_index: index }),
+            },
+          );
+          if (!res.ok) throw new Error("Selection failed");
+          startPolling(); // Poll for details now
+        } catch (e) {
+          showError("init", e.message);
+          resetUI();
+        }
+      }
+
+      async function loadResult() {
+        document.getElementById("step-loading").classList.add("hidden");
+        document.getElementById("step-result").classList.remove("hidden");
+
+        const res = await fetch(`${API_BASE}/cases/result/${sessionId}`);
+        const result = await res.json();
+        const content = document.getElementById("result-content");
+
+        // Use JSON view for clarity as requested before, but maybe we can make it nicer?
+        // Let's just dump JSON for now as per previous standard
+        const jsonContainer = document.createElement("pre");
+        jsonContainer.innerText = JSON.stringify(
+          result.data.structured_data,
+          null,
+          2,
+        );
+        content.innerHTML = "";
+        content.appendChild(jsonContainer);
+
+        // PDF Links
+        if (result.data.structured_data?.orders?.length > 0) {
+          const pdfDiv = document.createElement("div");
+          pdfDiv.innerHTML = "<h4>Orders</h4>";
+          result.data.structured_data.orders.forEach((o) => {
+            if (o.pdf_filename) {
+              pdfDiv.innerHTML += `<div><a href="${API_BASE}/cases/pdf/${sessionId}/${o.pdf_filename}" target="_blank">Order ${o.order_no} (${o.date})</a></div>`;
+            }
+          });
+          content.appendChild(pdfDiv);
+        }
+      }
+
+      function resetUI() {
+        document.getElementById("step-loading").classList.add("hidden");
+        document.getElementById("step-result").classList.add("hidden");
+        document.getElementById("step-list").classList.add("hidden");
+        document.getElementById("step-captcha").classList.add("hidden");
+        document.getElementById("step-init").classList.remove("hidden");
+      }
+
+      function showError(step, msg) {
+        const el = document.getElementById(`error-${step}`);
+        el.innerText = msg;
+        el.classList.remove("hidden");
+      }
+      function hideError(step) {
+        document.getElementById(`error-${step}`).classList.add("hidden");
+      }
+
+      // Init
+      toggleForm();
+    </script>
+  </body>
+</html>
