@@ -35,3 +35,9 @@ class CaseResultResponse(BaseModel):
     state: str
     data: Optional[Dict[str, Any]] = None
     error: Optional[str] = None
+
+class MultiSelectRequest(BaseModel):
+    case_indices: List[int]
+
+class MultiSaveRequest(BaseModel):
+    case_indices: List[int]

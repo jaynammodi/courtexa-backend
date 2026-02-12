@@ -239,6 +239,12 @@ async def fetch_results(session_id: str) -> Dict[str, Any]:
                         }
                         # Run sync request in threadpool
                         biz_text = await run_in_threadpool(client.view_business, b_payload)
+
+                        # 🔥 CRITICAL FIX
+                        session.app_token = client.current_token
+                        session.cookies = client.get_cookies()
+                        await session.save()
+
                         row["business_update"] = biz_text
                     except Exception as e:
                         print(f"WARN: Failed to fetch business for row: {e}")
@@ -267,6 +273,11 @@ async def fetch_results(session_id: str) -> Dict[str, Any]:
                          
                          # 1. Trigger Generation
                          await run_in_threadpool(client.display_pdf, p_payload)
+
+                         # 🔥 CRITICAL FIX
+                         session.app_token = client.current_token
+                         session.cookies = client.get_cookies()
+                         await session.save()
                          
                          # 2. Download Bytes
                          # Note: display_pdf usually returns HTML/Text status, the PDF is at report URL
@@ -391,6 +402,11 @@ async def select_case(session_id: str, case_index: int):
     
     print(f"DEBUG: select_case fetching case details for CNR {args[1]}...")
     resp = await run_in_threadpool(client.view_history, payload)
+
+    # 🔥 Persist updated token + cookies
+    session.app_token = client.current_token
+    session.cookies = client.get_cookies()
+    await session.save()
     
     try:
         data = resp.json()

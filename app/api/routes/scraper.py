@@ -1,5 +1,5 @@
 from fastapi import APIRouter, HTTPException, Response, Depends
-from app.schemas.scraper import StartCaseRequest, CaptchaSubmitRequest, SessionStatusResponse, CaseResultResponse, SelectCaseRequest
+from app.schemas.scraper import StartCaseRequest, CaptchaSubmitRequest, SessionStatusResponse, CaseResultResponse, SelectCaseRequest, MultiSelectRequest, MultiSaveRequest
 from app.services.scraper.flows import start_session, get_captcha, submit_captcha, fetch_results, get_case_list, select_case
 from fastapi.concurrency import run_in_threadpool
 from app.services.scraper.session import ScraperSession
@@ -103,6 +103,82 @@ async def select_case_endpoint(
         return result
     except Exception as e:
         print("DEBUG:", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+# @router.post("/select-multiple/{session_id}")
+# async def select_multiple_cases(
+#     session_id: str,
+#     request: MultiSelectRequest,
+#     current_user: User = Depends(deps.get_current_active_user)
+# ):
+#     """
+#     Select multiple cases and return structured metadata for preview.
+#     Does NOT persist anything.
+#     """
+#     try:
+#         results = []
+
+#         for index in request.case_indices:
+#             # Select case
+#             await select_case(session_id, index)
+
+#             # Fetch result
+#             result = await fetch_results(session_id)
+
+#             if result.get("state") != "HISTORY_FETCHED":
+#                 raise HTTPException(
+#                     status_code=400,
+#                     detail=f"Case at index {index} not fully fetched"
+#                 )
+
+#             results.append(result.get("data"))
+
+#         return {"cases": results}
+
+#     except Exception as e:
+#         import traceback
+#         traceback.print_exc()
+#         raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/select-multiple/{session_id}")
+async def select_multiple_cases(
+    session_id: str,
+    request: MultiSelectRequest,
+    current_user: User = Depends(deps.get_current_active_user)
+):
+    """
+    Sequentially selects multiple cases using the same logic as single select.
+    No state mutation hacks.
+    """
+
+    results = []
+
+    try:
+        for index in request.case_indices:
+
+            # Select + fully process one case
+            await select_case(session_id, index)
+
+            result = await fetch_results(session_id)
+
+            if result.get("state") != "HISTORY_FETCHED":
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Case at index {index} not fully fetched"
+                )
+
+            results.append(result["data"])
+
+            # IMPORTANT:
+            # DO NOT manually override session.state
+            # select_case should return session naturally
+            # to CASE_LIST_LOADED at the end.
+
+        return {"cases": results}
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/captcha/{session_id}")
@@ -351,4 +427,121 @@ async def save_case_to_workspace(
     except Exception as e:
         db.rollback()
         print(e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/save-multiple/{session_id}")
+async def save_multiple_cases(
+    session_id: str,
+    request: MultiSaveRequest,
+    workspace_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(deps.get_current_active_user)
+):
+    """
+    Re-selects and saves multiple cases to DB.
+    Backend authoritative scrape before saving.
+    """
+    saved_cases = []
+
+    try:
+        for index in request.case_indices:
+
+            # Select case
+            await select_case(session_id, index)
+
+            # Fetch structured data
+            result = await fetch_results(session_id)
+
+            if result.get("state") != "HISTORY_FETCHED" or not result.get("data"):
+                continue  # skip silently or raise depending on your preference
+
+            data = result["data"]["structured_data"]
+            cino = data["cino"]
+
+            # Check existing
+            existing_case = db.query(Case).filter(
+                Case.cino == cino,
+                Case.workspace_id == workspace_id
+            ).first()
+
+            if existing_case:
+                continue  # skip duplicates safely
+
+            # ---- SAME LOGIC AS SINGLE SAVE ----
+
+            case_obj = Case(
+                workspace_id=workspace_id,
+                cino=cino,
+                title=data["title"],
+                internal_status=data["internal_status"],
+                court_name=data["court"]["name"],
+                court_level=data["court"]["level"],
+                court_bench=data["court"]["bench"],
+                court_code=data["court"]["court_code"],
+                summary_petitioner=data["summary"]["petitioner"],
+                summary_respondent=data["summary"]["respondent"],
+                summary_short_title=data["summary"]["short_title"],
+                case_type=data["case_details"]["case_type"],
+                filing_number=data["case_details"]["filing_number"],
+                filing_date=data["case_details"]["filing_date"],
+                registration_number=data["case_details"]["registration_number"],
+                registration_date=data["case_details"]["registration_date"],
+                first_hearing_date=data["status"]["first_hearing_date"],
+                next_hearing_date=data["status"]["next_hearing_date"],
+                last_hearing_date=data["status"]["last_hearing_date"],
+                decision_date=data["status"]["decision_date"],
+                case_stage=data["status"]["case_stage"],
+                case_status_text=data["status"]["case_status_text"],
+                nature_of_disposal=data["status"]["nature_of_disposal"],
+                judge=data["status"]["judge"],
+                meta_scraped_at=data["meta_scraped_at"],
+                meta_source=data["meta_source"],
+                meta_source_url=data["meta_source_url"],
+                raw_html=data["raw_html"]
+            )
+
+            db.add(case_obj)
+            db.flush()
+
+            for p in data["parties"]:
+                db.add(CaseParty(
+                    case_id=case_obj.id,
+                    is_petitioner=p["is_petitioner"],
+                    name=p["name"],
+                    advocate=p["advocate"],
+                    role=p["role"],
+                    raw_text=p["raw_text"]
+                ))
+
+            for a in data["acts"]:
+                db.add(CaseAct(
+                    case_id=case_obj.id,
+                    act_name=a["act_name"],
+                    section=a["section"],
+                    act_code=a["act_code"]
+                ))
+
+            for h in data["history"]:
+                db.add(CaseHistory(
+                    case_id=case_obj.id,
+                    business_date=h["business_date"],
+                    hearing_date=h["hearing_date"],
+                    purpose=h["purpose"],
+                    stage=h["stage"],
+                    notes=h["notes"],
+                    judge=h["judge"],
+                    source=h["source"]
+                ))
+
+            saved_cases.append(case_obj)
+
+        db.commit()
+
+        return {
+            "saved_count": len(saved_cases),
+            "cases": saved_cases
+        }
+
+    except Exception as e:
+        db.rollback()
         raise HTTPException(status_code=500, detail=str(e))

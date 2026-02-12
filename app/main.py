@@ -13,7 +13,7 @@ app = FastAPI(
 
 @app.middleware("http")
 def add_delay(request, call_next):
-    time.sleep(1)
+    time.sleep(0)
     return call_next(request)
 
 # Set all CORS enabled origins
