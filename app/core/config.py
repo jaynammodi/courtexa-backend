@@ -30,6 +30,10 @@ class Settings(BaseSettings):
     JWT_ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     
+    # Redis
+    REDIS_URL: str = "redis://localhost:6379"
+    SESSION_TTL: int = 900  # 15 minutes
+
     model_config = SettingsConfigDict(
         env_file=".env", 
         env_ignore_empty=True,

@@ -4,7 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 import time
 
 from app.core.config import settings
-from app.api.routes import auth, users, workspaces, appointments, availability, cases
+from app.api.routes import auth, users, workspaces, appointments, availability, cases, scraper
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
@@ -36,6 +36,7 @@ app.include_router(workspaces.router, prefix=f"{settings.API_V1_STR}/workspaces"
 app.include_router(appointments.router, prefix=f"{settings.API_V1_STR}/appointments", tags=["appointments"])
 app.include_router(availability.router, prefix=f"{settings.API_V1_STR}/availability", tags=["availability"])
 app.include_router(cases.router, prefix=f"{settings.API_V1_STR}/cases", tags=["cases"])
+app.include_router(scraper.router, prefix=f"{settings.API_V1_STR}/scraper", tags=["scraper"])
 
 @app.get("/health")
 def health_check():

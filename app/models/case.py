@@ -43,6 +43,7 @@ class Case(Base):
     
     case_stage = Column(String, nullable=True)
     case_status_text = Column(String, nullable=True)
+    nature_of_disposal = Column(String, nullable=True)
     judge = Column(String, nullable=True)
 
     # --- User Meta ---
@@ -74,6 +75,7 @@ class Case(Base):
     _parties = relationship("CaseParty", back_populates="case", cascade="all, delete-orphan")
     acts = relationship("CaseAct", back_populates="case", cascade="all, delete-orphan")
     history = relationship("CaseHistory", back_populates="case", cascade="all, delete-orphan")
+    orders = relationship("CaseOrder", back_populates="case", cascade="all, delete-orphan")
     
     # Relation back from appointments
     appointments = relationship("Appointment", back_populates="case")
@@ -240,3 +242,19 @@ class CaseHistory(Base):
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
     case = relationship("Case", back_populates="history")
+
+
+class CaseOrder(Base):
+    __tablename__ = "case_orders"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    case_id = Column(UUID(as_uuid=True), ForeignKey("cases.id"), nullable=False, index=True)
+
+    order_no = Column(String, nullable=True)
+    date = Column(Date, nullable=True)
+    details = Column(Text, nullable=True)
+    pdf_filename = Column(String, nullable=True) # stored filename
+    
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    case = relationship("Case", back_populates="orders")

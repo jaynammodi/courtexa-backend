@@ -25,6 +25,8 @@ class CaseIndexRow(BaseModel):
 
     priority: Optional[str]
     starred: bool
+    created_at: Optional[datetime]
+    updated_at: Optional[datetime]
 
     class Config:
         from_attributes = True
@@ -72,6 +74,7 @@ class CaseStatus(BaseModel):
     decision_date: Optional[date] = None
     case_stage: Optional[str] = None
     case_status_text: Optional[str] = None
+    nature_of_disposal: Optional[str] = None
     judge: Optional[str] = None
 
 class CaseUserMeta(BaseModel):

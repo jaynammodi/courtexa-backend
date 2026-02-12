@@ -1,0 +1,354 @@
+from fastapi import APIRouter, HTTPException, Response, Depends
+from app.schemas.scraper import StartCaseRequest, CaptchaSubmitRequest, SessionStatusResponse, CaseResultResponse, SelectCaseRequest
+from app.services.scraper.flows import start_session, get_captcha, submit_captcha, fetch_results, get_case_list, select_case
+from fastapi.concurrency import run_in_threadpool
+from app.services.scraper.session import ScraperSession
+from app.services.scraper.errors import ECourtsError
+from app.api import deps
+from app.models.user import User
+from app.models.case import Case, CaseParty, CaseHistory, CaseAct, CaseOrder
+from app.api.deps import get_db
+from sqlalchemy.orm import Session
+from uuid import UUID
+from app.services.scraper.client import ECourtsClient
+from app.services.scraper.utils import parse_options_html
+from bs4 import BeautifulSoup
+import time
+
+router = APIRouter()
+
+@router.post("/start", response_model=SessionStatusResponse)
+async def start_case(
+    request: StartCaseRequest,
+    current_user: User = Depends(deps.get_current_active_user)
+):
+    try:
+        payload = {}
+        
+        if request.search_mode == "cnr":
+            if not request.cnr:
+                raise HTTPException(status_code=400, detail="CNR is required for CNR search mode")
+            payload["cnr"] = request.cnr
+            
+        elif request.search_mode == "party":
+            if not request.party_name or len(request.party_name) < 3:
+                raise HTTPException(status_code=400, detail="Party Name (min 3 chars) required")
+            if not request.state_code or not request.dist_code or not request.court_complex_code:
+                 raise HTTPException(status_code=400, detail="Location details (state, dist, complex) required")
+            
+            payload.update({
+                'petres_name': request.party_name,
+                'rgyearP': request.registration_year or '',
+                'case_status': request.case_status or 'Both',
+                'state_code': request.state_code,
+                'dist_code': request.dist_code,
+                'court_complex_code': request.court_complex_code,
+                'est_code': 'null' 
+            })
+            
+        elif request.search_mode == "advocate":
+            if not request.advocate_name:
+                 raise HTTPException(status_code=400, detail="Advocate Name required")
+            if not request.state_code or not request.dist_code or not request.court_complex_code:
+                 raise HTTPException(status_code=400, detail="Location details (state, dist, complex) required")
+            
+            payload.update({
+                'radAdvt': '1', 
+                'advocate_name': request.advocate_name, 
+                'case_status': request.case_status or 'Both',
+                'adv_bar_state': '', 'adv_bar_code': '', 'adv_bar_year': '', 'case_type': '',
+                'caselist_date': time.strftime("%d-%m-%Y"),
+                'state_code': request.state_code,
+                'dist_code': request.dist_code,
+                'court_complex_code': request.court_complex_code,
+                'est_code': 'null'
+            })
+        else:
+             raise HTTPException(status_code=400, detail="Invalid search_mode")
+            
+        session_id = await start_session(request.search_mode, payload)
+        
+        # Get initial state
+        session = await ScraperSession.get(session_id)
+        return SessionStatusResponse(
+            session_id=session.session_id,
+            state=session.state,
+            retries=session.data.get("retries", 0),
+            last_error=session.data.get("last_error")
+        )
+    except ECourtsError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/list/{session_id}")
+async def get_cases_list_route(
+    session_id: str,
+    current_user: User = Depends(deps.get_current_active_user)
+):
+    """"Get list of cases for Party/Advocate search."""
+    try:
+        return await get_case_list(session_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/select-case/{session_id}")
+async def select_case_endpoint(
+    session_id: str, 
+    request: SelectCaseRequest,
+    current_user: User = Depends(deps.get_current_active_user)
+):
+    try:
+        result = await select_case(session_id, request.case_index)
+        return result
+    except Exception as e:
+        print("DEBUG:", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/captcha/{session_id}")
+async def get_captcha_image(
+    session_id: str,
+    current_user: User = Depends(deps.get_current_active_user)
+):
+    try:
+        img_bytes = await get_captcha(session_id)
+        return Response(content=img_bytes, media_type="image/png")
+    except ECourtsError as e:
+         raise HTTPException(status_code=400, detail=str(e))
+
+@router.post("/captcha/{session_id}")
+async def submit_captcha_code(
+    session_id: str, 
+    request: CaptchaSubmitRequest,
+    current_user: User = Depends(deps.get_current_active_user)
+):
+    try:
+        await submit_captcha(session_id, request.captcha)
+        return {"status": "submitted"}
+    except ECourtsError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@router.get("/status/{session_id}", response_model=SessionStatusResponse)
+async def get_status(
+    session_id: str,
+    current_user: User = Depends(deps.get_current_active_user)
+):
+    try:
+        session = await ScraperSession.get(session_id)
+        return SessionStatusResponse(
+            session_id=session.session_id,
+            state=session.state,
+            retries=session.data.get("retries", 0),
+            last_error=session.data.get("last_error")
+        )
+    except Exception as e:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+@router.get("/pdf/{session_id}/{filename}")
+async def get_case_pdf(
+    session_id: str, 
+    filename: str,
+    current_user: User = Depends(deps.get_current_active_user)
+):
+    try:
+        session = await ScraperSession.get(session_id)
+        files = session.data.get("files", {})
+        
+        hex_content = files.get(filename)
+        if not hex_content:
+            raise HTTPException(status_code=404, detail="File not found")
+            
+        pdf_bytes = bytes.fromhex(hex_content)
+        return Response(content=pdf_bytes, media_type="application/pdf")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/result/{session_id}", response_model=CaseResultResponse)
+async def get_result(
+    session_id: str,
+    current_user: User = Depends(deps.get_current_active_user)
+):
+    try:
+        result = await fetch_results(session_id)
+        return CaseResultResponse(
+            session_id=session_id,
+            state=result.get("state"),
+            data=result.get("data"),
+            error=result.get("error")
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/meta/states")
+async def get_states(
+    current_user: User = Depends(deps.get_current_active_user)
+):
+    """Fetch list of available states from eCourts."""
+    try:
+        client = ECourtsClient()
+        # In threadpool to avoid blocking
+        token, home_html = await run_in_threadpool(client.get_initial_token)
+        
+        if not home_html:
+             raise HTTPException(status_code=500, detail="Failed to load eCourts homepage")
+        
+        soup = BeautifulSoup(home_html, 'html.parser')
+        state_select = soup.find('select', id='sess_state_code')
+        
+        if not state_select:
+             raise HTTPException(status_code=500, detail="State dropdown not found")
+             
+        states = parse_options_html(str(state_select))
+        return {"states": states}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/meta/districts/{state_code}")
+async def get_districts(
+    state_code: str,
+    current_user: User = Depends(deps.get_current_active_user)
+):
+    """Fetch districts for a given state."""
+    try:
+        client = ECourtsClient()
+        await run_in_threadpool(client.get_initial_token) # Init session
+        
+        resp = await run_in_threadpool(client.get_districts, state_code)
+        districts = parse_options_html(resp.text)
+        return {"districts": districts}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/meta/complexes/{state_code}/{dist_code}")
+async def get_complexes(
+    state_code: str, 
+    dist_code: str,
+    current_user: User = Depends(deps.get_current_active_user)
+):
+    """Fetch court complexes for a given state and district."""
+    try:
+        client = ECourtsClient()
+        await run_in_threadpool(client.get_initial_token) # Init session
+        
+        resp = await run_in_threadpool(client.get_complexes, state_code, dist_code)
+        complexes = parse_options_html(resp.text)
+        return {"complexes": complexes}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/save/{session_id}")
+async def save_case_to_workspace(
+    session_id: str,
+    workspace_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(deps.get_current_active_user)
+):
+    """
+    Saves the scraped case (from session) to the database under the given workspace.
+    """
+    try:
+        # 1. Fetch Result
+        result = await fetch_results(session_id)
+        if result.get("state") != "HISTORY_FETCHED" or not result.get("data"):
+             raise HTTPException(status_code=400, detail="Scraper session not completed or no data found")
+             
+        data = result["data"]["structured_data"]
+        
+        # 2. Check if exists
+        cino = data["cino"]
+        existing_case = db.query(Case).filter(Case.cino == cino, Case.workspace_id == workspace_id).first()
+        if existing_case:
+            raise HTTPException(status_code=409, detail=f"Case {cino} already exists in this workspace")
+
+        # 3. Create Case Object
+        # Flatten structure to match Case model
+        
+        # Helper to parse dates safely
+        # Pydantic exports dates as strings in JSON mode, so we might need parsing if SQLAlchemy requires date objects
+        # But if we pass strings to Date column, SQLAlchemy usually handles it if format is ISO.
+        # However, data["status"]["first_hearing_date"] might be YYYY-MM-DD string.
+        
+        case_obj = Case(
+            workspace_id=workspace_id,
+            cino=cino,
+            title=data["title"],
+            internal_status=data["internal_status"],
+            
+            court_name=data["court"]["name"],
+            court_level=data["court"]["level"],
+            court_bench=data["court"]["bench"],
+            court_code=data["court"]["court_code"],
+            
+            summary_petitioner=data["summary"]["petitioner"],
+            summary_respondent=data["summary"]["respondent"],
+            summary_short_title=data["summary"]["short_title"],
+            
+            case_type=data["case_details"]["case_type"],
+            filing_number=data["case_details"]["filing_number"],
+            filing_date=data["case_details"]["filing_date"],
+            registration_number=data["case_details"]["registration_number"],
+            registration_date=data["case_details"]["registration_date"],
+            
+            first_hearing_date=data["status"]["first_hearing_date"],
+            next_hearing_date=data["status"]["next_hearing_date"],
+            last_hearing_date=data["status"]["last_hearing_date"],
+            decision_date=data["status"]["decision_date"],
+            
+            case_stage=data["status"]["case_stage"],
+            case_status_text=data["status"]["case_status_text"],
+            nature_of_disposal=data["status"]["nature_of_disposal"],
+            judge=data["status"]["judge"],
+            
+            # Meta
+            meta_scraped_at=data["meta_scraped_at"],
+            meta_source=data["meta_source"],
+            meta_source_url=data["meta_source_url"],
+            raw_html=data["raw_html"]
+        )
+        
+        db.add(case_obj)
+        db.flush() # Get ID
+        
+        # 4. Add Related Entities
+        
+        # Parties
+        for p in data["parties"]:
+            db.add(CaseParty(
+                case_id=case_obj.id,
+                is_petitioner=p["is_petitioner"],
+                name=p["name"],
+                advocate=p["advocate"],
+                role=p["role"],
+                raw_text=p["raw_text"]
+            ))
+            
+        # Acts
+        for a in data["acts"]:
+            db.add(CaseAct(
+                case_id=case_obj.id,
+                act_name=a["act_name"],
+                section=a["section"],
+                act_code=a["act_code"]
+            ))
+            
+        # History
+        for h in data["history"]:
+            db.add(CaseHistory(
+                case_id=case_obj.id,
+                business_date=h["business_date"],
+                hearing_date=h["hearing_date"],
+                purpose=h["purpose"],
+                stage=h["stage"],
+                notes=h["notes"],
+                judge=h["judge"],
+                source=h["source"]
+            ))
+            
+        db.commit()
+        db.refresh(case_obj)
+        return case_obj
+
+    except Exception as e:
+        db.rollback()
+        print(e)
+        raise HTTPException(status_code=500, detail=str(e))
