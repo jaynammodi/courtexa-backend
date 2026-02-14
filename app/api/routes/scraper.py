@@ -1,5 +1,7 @@
+from rich.pretty import pprint
 from fastapi import APIRouter, HTTPException, Response, Depends
 from app.schemas.scraper import StartCaseRequest, CaptchaSubmitRequest, SessionStatusResponse, CaseResultResponse, SelectCaseRequest, MultiSelectRequest, MultiSaveRequest
+from app.schemas.sidebar import SidebarInitRequest, SidebarInitResponse, SidebarSubmitRequest
 from app.services.scraper.flows import start_session, get_captcha, submit_captcha, fetch_results, get_case_list, select_case
 from fastapi.concurrency import run_in_threadpool
 from app.services.scraper.session import ScraperSession
@@ -14,6 +16,38 @@ from app.services.scraper.client import ECourtsClient
 from app.services.scraper.utils import parse_options_html
 from bs4 import BeautifulSoup
 import time
+import base64
+
+def build_ecourts_payload(mode: str, p: dict):
+    if mode == "party":
+        return {
+            "petres_name": p.get("party_name"),
+            "rgyearP": p.get("registration_year") or "",
+            "case_status": p.get("case_status") or "Both",
+            "state_code": p.get("state_code"),
+            "dist_code": p.get("dist_code"),
+            "court_complex_code": p.get("court_complex_code"),
+            "est_code": "null"
+        }
+
+    if mode == "advocate":
+        return {
+            "radAdvt": "1",
+            "advocate_name": p.get("advocate_name"),
+            "case_status": p.get("case_status") or "Both",
+            "state_code": p.get("state_code"),
+            "dist_code": p.get("dist_code"),
+            "court_complex_code": p.get("court_complex_code"),
+            "est_code": "null",
+            "caselist_date": time.strftime("%d-%m-%Y")
+        }
+
+    if mode == "cnr":
+        return {
+            "cnr": p.get("cnr")
+        }
+
+    return p
 
 router = APIRouter()
 
@@ -47,8 +81,8 @@ async def start_case(
             })
             
         elif request.search_mode == "advocate":
-            if not request.advocate_name:
-                 raise HTTPException(status_code=400, detail="Advocate Name required")
+            if not request.advocate_name or len(request.advocate_name) < 3:
+                raise HTTPException(status_code=400, detail="Advocate Name (min 3 chars) required")
             if not request.state_code or not request.dist_code or not request.court_complex_code:
                  raise HTTPException(status_code=400, detail="Location details (state, dist, complex) required")
             
@@ -104,41 +138,6 @@ async def select_case_endpoint(
     except Exception as e:
         print("DEBUG:", e)
         raise HTTPException(status_code=500, detail=str(e))
-
-# @router.post("/select-multiple/{session_id}")
-# async def select_multiple_cases(
-#     session_id: str,
-#     request: MultiSelectRequest,
-#     current_user: User = Depends(deps.get_current_active_user)
-# ):
-#     """
-#     Select multiple cases and return structured metadata for preview.
-#     Does NOT persist anything.
-#     """
-#     try:
-#         results = []
-
-#         for index in request.case_indices:
-#             # Select case
-#             await select_case(session_id, index)
-
-#             # Fetch result
-#             result = await fetch_results(session_id)
-
-#             if result.get("state") != "HISTORY_FETCHED":
-#                 raise HTTPException(
-#                     status_code=400,
-#                     detail=f"Case at index {index} not fully fetched"
-#                 )
-
-#             results.append(result.get("data"))
-
-#         return {"cases": results}
-
-#     except Exception as e:
-#         import traceback
-#         traceback.print_exc()
-#         raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/select-multiple/{session_id}")
 async def select_multiple_cases(
@@ -545,3 +544,61 @@ async def save_multiple_cases(
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/sidebar-init", response_model=SidebarInitResponse)
+async def sidebar_init(
+    request: SidebarInitRequest,
+    current_user: User = Depends(deps.get_current_active_user)
+):
+    try:
+        # 1️⃣ Start session using existing function
+        session_id = await start_session(request.search_mode, request.payload)
+
+        # 2️⃣ Get captcha using existing function
+        img_bytes = await get_captcha(session_id)
+
+        # 3️⃣ Encode for frontend
+        captcha_base64 = base64.b64encode(img_bytes).decode()
+
+        return SidebarInitResponse(
+            session_id=session_id,
+            captcha_base64=captcha_base64
+        )
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/sidebar-submit")
+async def sidebar_submit(
+    request: SidebarSubmitRequest,
+    current_user: User = Depends(deps.get_current_active_user)
+):
+    try:
+        session = await ScraperSession.get(request.session_id)
+
+        # ✅ sync mode with sidebar form
+        session.data["search_mode"] = request.search_mode
+
+        # ✅ replace payload cleanly
+        # session.data["payload"] = request.payload
+        session.data["payload"] = build_ecourts_payload(
+            session.search_mode,
+            request.payload
+        )
+        session.is_dirty = True
+
+        await session.save()
+
+        pprint(session.data)
+
+        await submit_captcha(request.session_id, request.captcha)
+
+        return {
+            "session_id": session.session_id,
+            "state": session.state
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    

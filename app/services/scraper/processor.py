@@ -3,6 +3,45 @@ import re
 import html
 import bleach
 from bs4 import BeautifulSoup
+from datetime import datetime
+
+DATE_FORMATS = [
+    "%d-%m-%Y",
+    "%d/%m/%Y",
+    "%Y-%m-%d",
+    "%m-%d-%Y",
+    "%m/%d/%Y",
+]
+
+DATE_KEYWORDS = (
+    "date",
+    "hearing",
+    "filing",
+    "registration",
+    "dob",
+)
+
+def maybe_normalize_value(key, value):
+    v = clean_text(value)
+
+    if any(k in key.lower() for k in DATE_KEYWORDS):
+        return normalize_date(v)
+
+    return v
+
+def normalize_date(value: str | None):
+    if not value:
+        return None
+
+    value = value.strip()
+
+    for fmt in DATE_FORMATS:
+        try:
+            return datetime.strptime(value, fmt).date().isoformat()
+        except ValueError:
+            continue
+
+    return value  # fallback: keep original if unknown
 
 def clean_text(text):
     if not text:
@@ -32,12 +71,25 @@ def parse_kv_table(soup, css_class):
     for row in rows:
         cells = row.find_all('td')
         # 4-column layout: Key | Value | Key | Value
+        # if len(cells) == 4:
+        #     data[clean_text(cells[0].text).rstrip(':')] = clean_text(cells[1].text)
+        #     data[clean_text(cells[2].text).rstrip(':')] = clean_text(cells[3].text)
         if len(cells) == 4:
-            data[clean_text(cells[0].text).rstrip(':')] = clean_text(cells[1].text)
-            data[clean_text(cells[2].text).rstrip(':')] = clean_text(cells[3].text)
+            k1 = clean_text(cells[0].text).rstrip(':')
+            v1 = maybe_normalize_value(k1, cells[1].text)
+
+            k2 = clean_text(cells[2].text).rstrip(':')
+            v2 = maybe_normalize_value(k2, cells[3].text)
+
+            data[k1] = v1
+            data[k2] = v2
         # 2-column layout: Key | Value
+        # elif len(cells) == 2:
+        #     data[clean_text(cells[0].text).rstrip(':')] = clean_text(cells[1].text)
         elif len(cells) == 2:
-            data[clean_text(cells[0].text).rstrip(':')] = clean_text(cells[1].text)
+            k = clean_text(cells[0].text).rstrip(':')
+            v = maybe_normalize_value(k, cells[1].text)
+            data[k] = v
         # Special case for "Court number and Judge" which often spans colspan
         elif len(cells) == 1:
              # Check if it's a header or a value
@@ -89,8 +141,8 @@ def parse_history_row(cells, business_text=""):
     
     return {
         'judge': clean_text(cells[0].text),
-        'business_date': clean_text(cells[1].text),
-        'hearing_date': clean_text(cells[2].text),
+        'business_date': normalize_date(clean_text(cells[1].text)),
+        'hearing_date': normalize_date(clean_text(cells[2].text)),
         'purpose': clean_text(cells[3].text),
         'business_update': business_text 
     }
@@ -103,8 +155,8 @@ def parse_history_row_text(cells, business_text=""):
     # Use consistent keys
     return {
         'judge': clean_text(cells[3]),
-        'business_date': clean_text(cells[1]),
-        'hearing_date': clean_text(cells[0]),
+        'business_date': normalize_date(clean_text(cells[1])),
+        'hearing_date': normalize_date(clean_text(cells[0])),
         'purpose': clean_text(cells[2]),
         'business_update': clean_text(cells[4]) if len(cells) > 4 else business_text
     }
@@ -247,8 +299,8 @@ def parse_full_case_data(html_content):
             
             h_row = {
                 "judge": clean_text(cols[0].text),
-                "business_date": clean_text(cols[1].text),
-                "hearing_date": clean_text(cols[2].text),
+                "business_date": normalize_date(clean_text(cols[1].text)),
+                "hearing_date": normalize_date(clean_text(cols[2].text)),
                 "purpose": clean_text(cols[3].text),
                 "business_link_args": None
             }
@@ -274,7 +326,7 @@ def parse_full_case_data(html_content):
             # Order Number | Date | Order Details (Link)
             o_row = {
                 "order_no": clean_text(cols[0].text),
-                "date": clean_text(cols[1].text),
+                "date": normalize_date(clean_text(cols[1].text)),
                 "details": clean_text(cols[2].text),
                 "pdf_link_args": None
             }

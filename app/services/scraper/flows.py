@@ -11,6 +11,27 @@ from app.services.scraper.transformer import transform_to_schema
 from app.services.scraper.errors import TokenError, CaptchaError, RetryableError
 from app.services.scraper.ocr import solve_captcha
 
+VS_PATTERN = re.compile(r'(?i)(?:\s*)(?:v\/?s\.?|vs\.?|v\.)(?:\s*)')
+
+def split_parties(raw_parties: str):
+    parts = VS_PATTERN.split(raw_parties, maxsplit=1)
+
+    if len(parts) != 2:
+        return {
+            "petitioner": raw_parties.strip(),
+            "respondent": None,
+            "error": "Could not split parties"
+        }
+
+    petitioner = parts[0].strip()
+    respondent = parts[1].strip()
+
+    return {
+        "petitioner": petitioner,
+        "respondent": respondent
+    }
+
+
 async def start_session(search_mode: str, payload: Dict[str, Any]) -> str:
     session = await ScraperSession.create(search_mode, payload)
     
@@ -77,6 +98,11 @@ async def submit_captcha(session_id: str, captcha_code: str):
             # We run this sync in threadpool to ensure session on server is updated
             resp = await run_in_threadpool(client.set_data, state, dist, complex_code)
             print(f"DEBUG: set_data response: {resp.text[:200]}")
+
+            # ✅ persist refreshed token
+            if client.current_token and client.current_token != session.app_token:
+                session.app_token = client.current_token
+                await session.save()
     
     # Perform search with retry logic
     attempts = 0
@@ -330,6 +356,7 @@ async def fetch_results(session_id: str) -> Dict[str, Any]:
     else:
         return {"state": session.state, "error": session.data.get("last_error")}
 
+
 async def get_case_list(session_id: str):
     """"For Party/Advocate search, returns the list of cases to select from."""
     session = await ScraperSession.get(session_id)
@@ -352,23 +379,27 @@ async def get_case_list(session_id: str):
         if len(cols) < 3: continue
         
         # Extract text for display
-        cnr_txt = clean_text(cols[0].text) # Usually first col is CNR or SR No
-        pet_txt = clean_text(cols[1].text)
-        res_txt = clean_text(cols[2].text)
+        sr_no = clean_text(cols[0].text) # Usually first col is CNR or SR No
+        case_number = clean_text(cols[1].text)
+        raw_parties = clean_text(cols[2].text)
+
+        parties = split_parties(raw_parties)
+        pet_txt = parties["petitioner"]
+        res_txt = parties["respondent"]
         
-        full_text = f"{cnr_txt} | {pet_txt} vs {res_txt}"
+        full_text = f"{sr_no} | {case_number} | {pet_txt} vs {res_txt}"
         
         link = row.find('a', onclick=re.compile(r'viewHistory'))
         if link:
             cases.append({
                 "index": idx,
                 "display": full_text,
-                "cnr": cnr_txt, # Might not be actual CNR, but display text
+                "case_number": case_number,
                 "petitioner": pet_txt,
                 "respondent": res_txt,
                 "onclick": link['onclick']
             })
-            
+    print(f"DEBUG: Found {len(cases)} cases")
     return {"state": session.state, "cases": cases}
 
 async def select_case(session_id: str, case_index: int):
