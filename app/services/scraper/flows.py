@@ -542,3 +542,4 @@ async def refresh_case(cnr: str, max_retries: int = 5) -> Dict[str, Any]:
             print(f"DEBUG: Refresh Exception (attempt {attempt+1}): {e}")
             
     raise Exception(f"Failed to refresh case {cnr} after {max_retries} attempts")
+

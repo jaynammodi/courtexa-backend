@@ -1,5 +1,5 @@
 from rich.pretty import pprint
-from fastapi import APIRouter, HTTPException, Response, Depends
+from fastapi import APIRouter, HTTPException, Response, Depends, Query
 from app.schemas.scraper import StartCaseRequest, CaptchaSubmitRequest, SessionStatusResponse, CaseResultResponse, SelectCaseRequest, MultiSelectRequest, MultiSaveRequest
 from app.schemas.sidebar import SidebarInitRequest, SidebarInitResponse, SidebarSubmitRequest
 from app.services.scraper.flows import start_session, get_captcha, submit_captcha, fetch_results, get_case_list, select_case
@@ -17,6 +17,25 @@ from app.services.scraper.utils import parse_options_html
 from bs4 import BeautifulSoup
 import time
 import base64
+
+# ---- PLAN LIMITS (backend simulated) ----
+
+class PlanLimits:
+    def __init__(self, multi_preview, multi_save, result_window):
+        self.multi_preview = multi_preview
+        self.multi_save = multi_save
+        self.result_window = result_window
+
+
+PLAN_LIMITS = {
+    "free":    PlanLimits(3, 3, 50),
+    "starter": PlanLimits(10, 10, 100),
+    "pro":     PlanLimits(50, 50, 200),
+}
+
+def get_user_plan_limits(user: User) -> PlanLimits:
+    # TODO replace with real subscription lookup
+    return PLAN_LIMITS["free"]
 
 def build_ecourts_payload(mode: str, p: dict):
     if mode == "party":
@@ -120,10 +139,22 @@ async def get_cases_list_route(
     session_id: str,
     current_user: User = Depends(deps.get_current_active_user)
 ):
-    """"Get list of cases for Party/Advocate search."""
     try:
-        return await get_case_list(session_id)
+        limits = get_user_plan_limits(current_user)
+
+        result = await get_case_list(session_id)
+        cases = result.get("cases")
+        pprint(cases)
+
+        if not cases:
+            return []
+
+        # HARD WINDOW LIMIT
+        result["cases"] = cases[: limits.result_window]
+        return result
+
     except Exception as e:
+        print(e)
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/select-case/{session_id}")
@@ -154,19 +185,17 @@ async def select_multiple_cases(
 
     try:
         for index in request.case_indices:
-
             # Select + fully process one case
-            await select_case(session_id, index)
+            result = await select_case(session_id, index)
+            # result = await fetch_results(session_id)
 
-            result = await fetch_results(session_id)
-
-            if result.get("state") != "HISTORY_FETCHED":
+            if result.get("status") != "success":
                 raise HTTPException(
                     status_code=400,
                     detail=f"Case at index {index} not fully fetched"
                 )
 
-            results.append(result["data"])
+            results.append(result)
 
             # IMPORTANT:
             # DO NOT manually override session.state
@@ -432,7 +461,7 @@ async def save_case_to_workspace(
 async def save_multiple_cases(
     session_id: str,
     request: MultiSaveRequest,
-    workspace_id: UUID,
+    workspace_id: UUID = Query(...),
     db: Session = Depends(get_db),
     current_user: User = Depends(deps.get_current_active_user)
 ):
@@ -441,6 +470,15 @@ async def save_multiple_cases(
     Backend authoritative scrape before saving.
     """
     saved_cases = []
+    limits = get_user_plan_limits(current_user)
+
+    pprint(request)
+
+    if len(request.case_indices) > limits.multi_save:
+        raise HTTPException(
+            status_code=403,
+            detail=f"Save limit exceeded ({limits.multi_save})"
+        )
 
     try:
         for index in request.case_indices:
@@ -544,7 +582,6 @@ async def save_multiple_cases(
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
-
 
 @router.post("/sidebar-init", response_model=SidebarInitResponse)
 async def sidebar_init(
