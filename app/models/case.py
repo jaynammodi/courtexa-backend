@@ -251,9 +251,11 @@ class CaseOrder(Base):
     case_id = Column(UUID(as_uuid=True), ForeignKey("cases.id"), nullable=False, index=True)
 
     order_no = Column(String, nullable=True)
-    date = Column(Date, nullable=True)
+    order_date = Column(Date, nullable=True)
     details = Column(Text, nullable=True)
+    
     pdf_filename = Column(String, nullable=True) # stored filename
+    file_path = Column(String, nullable=True)  # full storage path
     
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 

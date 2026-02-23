@@ -12,6 +12,12 @@ class Settings(BaseSettings):
     POSTGRES_PASSWORD: str | None = None
     POSTGRES_DB: str
     POSTGRES_PORT: int = 5432
+
+    FILE_STORAGE: str = "local"   # local | s3
+    S3_BUCKET: str | None = None
+    S3_REGION: str | None = None
+    S3_ACCESS_KEY: str | None = None
+    S3_SECRET_KEY: str | None = None
     
     @computed_field
     @property

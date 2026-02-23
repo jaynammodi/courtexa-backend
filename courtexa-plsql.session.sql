@@ -1,0 +1,1 @@
+TRUNCATE TABLE workspace_refresh_jobs;

@@ -25,10 +25,11 @@ class CaseHistorySchema(BaseModel):
 
 class CaseOrderSchema(BaseModel):
     order_no: Optional[str] = None
-    date: Optional[str] = None
+    order_date: Optional[date] = None
     details: Optional[str] = None
     pdf_link: Optional[str] = None # URL to serve PDF content
     pdf_filename: Optional[str] = None
+    file_path: Optional[str] = None
 
 class CaseCourtSchema(BaseModel):
     name: Optional[str] = None

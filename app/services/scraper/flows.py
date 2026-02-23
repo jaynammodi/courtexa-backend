@@ -10,6 +10,29 @@ from app.services.scraper.processor import sanitize_html, extract_css_links, par
 from app.services.scraper.transformer import transform_to_schema
 from app.services.scraper.errors import TokenError, CaptchaError, RetryableError
 from app.services.scraper.ocr import solve_captcha
+from app.services.storage import get_storage
+import requests
+from http.client import RemoteDisconnected
+
+RETRYABLE_EXCEPTIONS = (
+    requests.exceptions.ConnectionError,
+    requests.exceptions.Timeout,
+    RemoteDisconnected,
+    RetryableError,
+)
+
+async def retry_request(func, *args, attempts=3, delay=1, **kwargs):
+    last_exception = None
+
+    for attempt in range(attempts):
+        try:
+            return await run_in_threadpool(func, *args, **kwargs)
+        except RETRYABLE_EXCEPTIONS as e:
+            print(f"[REQUEST RETRY] Attempt {attempt+1} failed: {e}")
+            last_exception = e
+            await asyncio.sleep(delay)
+
+    raise last_exception
 
 VS_PATTERN = re.compile(r'(?i)(?:\s*)(?:v\/?s\.?|vs\.?|v\.)(?:\s*)')
 
@@ -71,158 +94,278 @@ async def get_captcha(session_id: str) -> bytes:
     await session.save()
     return img_bytes
 
+# async def submit_captcha(session_id: str, captcha_code: str):
+#     session = await ScraperSession.get(session_id)
+    
+#     # Validate state
+#     if session.state not in [STATE_CAPTCHA_REQUIRED, STATE_FAILED, STATE_CASE_LIST_LOADED]:
+#         pass
+
+#     session.update_payload({"fcaptcha_code": captcha_code})
+    
+#     client = ECourtsClient(cookies=session.cookies, current_token=session.app_token)
+    
+#     # Prepare payload based on mode
+#     mode = session.search_mode
+#     payload = session.data.get("payload", {}).copy()
+    
+#     # --- LOCATIONAL DATA LOCKING (For Party/Advocate) ---
+#     if mode in ['party', 'advocate']:
+#         # Ensure location is set on the server session
+#         # Payload should have state_code, dist_code, court_complex_code
+#         state = payload.get('state_code')
+#         dist = payload.get('dist_code')
+#         complex_code = payload.get('court_complex_code')
+        
+#         if state and dist and complex_code:
+#             # We run this sync in threadpool to ensure session on server is updated
+#             resp = await run_in_threadpool(client.set_data, state, dist, complex_code)
+#             print(f"DEBUG: set_data response: {resp.text[:200]}")
+
+#             # ✅ persist refreshed token
+#             if client.current_token and client.current_token != session.app_token:
+#                 session.app_token = client.current_token
+#                 await session.save()
+    
+#     # Perform search with retry logic
+#     attempts = 0
+#     max_attempts = 2
+    
+#     while attempts < max_attempts:
+#         attempts += 1
+#         try:
+#              # Ensure client has fresh token from session if it changed
+#             if session.app_token:
+#                 client.current_token = session.app_token
+
+#             print(f"DEBUG: submit_captcha Attempt {attempts} | Mode: {mode} | Token: {client.current_token[:10]}...")
+            
+#             response = None
+#             if mode == 'cnr':
+#                 search_payload = {
+#                      "cino": payload.get("cnr"),
+#                      "fcaptcha_code": captcha_code
+#                 }
+#                 response = await run_in_threadpool(client.search_cnr, search_payload)
+            
+#             elif mode == 'party':
+#                 # payload already has structure from start_session, but we need to clean complex code
+#                 search_payload = payload.copy() # Don't mutate session payload
+#                 search_payload['fcaptcha_code'] = captcha_code
+                
+#                 # Check complex code and clean if necessary
+#                 cc = search_payload.get('court_complex_code', '')
+#                 if '@' in cc:
+#                     search_payload['court_complex_code'] = cc.split('@')[0]
+                    
+#                 response = await run_in_threadpool(client.search_party, search_payload)
+                
+#             elif mode == 'advocate':
+#                 search_payload = payload.copy()
+#                 search_payload['adv_captcha_code'] = captcha_code
+                
+#                 cc = search_payload.get('court_complex_code', '')
+#                 if '@' in cc:
+#                     search_payload['court_complex_code'] = cc.split('@')[0]
+                
+#                 response = await run_in_threadpool(client.search_advocate, search_payload)
+            
+#             if not response:
+#                 raise Exception("Search method not implemented or failed")
+
+#             try:
+#                 result_json = response.json()
+#             except:
+#                  print(f"DEBUG: Invalid JSON. Response text: {response.text[:500]}...")
+#                  raise RetryableError("Invalid JSON response from eCourts")
+
+#             # Check for token refresh in response
+#             new_token = result_json.get('app_token')
+#             if new_token and new_token != session.app_token:
+#                 print(f"DEBUG: Token refreshed in search response: {new_token[:10]}...")
+#                 session.app_token = new_token
+#                 await session.save()
+                
+#                 # If we got an error message with a new token, we MUST retry
+#                 if result_json.get('errormsg'):
+#                      print(f"DEBUG: Error with new token, retrying... Msg: {result_json.get('errormsg')}")
+#                      continue
+
+#             if "Invalid Captcha" in str(result_json):
+#                 session.state = STATE_CAPTCHA_REQUIRED
+#                 await session.save()
+#                 raise CaptchaError("Invalid Captcha")
+            
+#             if "No Record Found" in str(result_json):
+#                  session.state = STATE_FAILED
+#                  session.set_error("No Record Found")
+#                  await session.save()
+#                  return
+
+#             # --- SUCCESS PATHS ---
+            
+#             # Path A: Direct Details (CNR)
+#             html_content = result_json.get('cino_data') or result_json.get('data_list') or result_json.get('casetype_list')
+            
+#             # Additional check for CNR: sometimes 'cino' search returns raw HTML in weird keys? 
+#             # Usually cino_data
+            
+#             if mode == 'cnr' and html_content:
+#                 session.update_payload({"result_html": html_content})
+#                 session.state = STATE_SEARCH_SUBMITTED
+#                 await session.save()
+#                 return 
+
+#             # Path B: Case List (Party/Advocate)
+#             # data keys: party_data or adv_data
+#             list_html = result_json.get('party_data') or result_json.get('adv_data') or result_json.get('data_list')
+            
+#             if mode in ['party', 'advocate'] and list_html:
+#                 session.update_payload({"list_html": list_html})
+#                 session.state = STATE_CASE_LIST_LOADED
+#                 await session.save()
+#                 return
+
+#             # If we are here, we might have an error message or just no data
+#             err_msg = result_json.get('errormsg', 'Unknown Error')
+#             print(f"DEBUG: Search failed but no exception. Msg: {err_msg}")
+            
+#             if "Invalid Request" in err_msg or "Something went wrong" in err_msg:
+#                 # Likely token issue or transient failure. Retry if attempts left.
+#                 if attempts < max_attempts:
+#                     continue
+
+#             session.state = STATE_FAILED
+#             session.set_error(f"Search failed: {err_msg}")
+#             await session.save()
+#             return
+            
+#         except Exception as e:
+#             print(f"DEBUG: Exception in search attempt {attempts}: {e}")
+#             if attempts >= max_attempts:
+#                 session.set_error(str(e))
+#                 await session.save()
+#                 raise e
+
 async def submit_captcha(session_id: str, captcha_code: str):
     session = await ScraperSession.get(session_id)
-    
-    # Validate state
-    if session.state not in [STATE_CAPTCHA_REQUIRED, STATE_FAILED, STATE_CASE_LIST_LOADED]:
-        pass
 
     session.update_payload({"fcaptcha_code": captcha_code})
-    
-    client = ECourtsClient(cookies=session.cookies, current_token=session.app_token)
-    
-    # Prepare payload based on mode
+
+    client = ECourtsClient(
+        cookies=session.cookies,
+        current_token=session.app_token
+    )
+
     mode = session.search_mode
     payload = session.data.get("payload", {}).copy()
-    
-    # --- LOCATIONAL DATA LOCKING (For Party/Advocate) ---
-    if mode in ['party', 'advocate']:
-        # Ensure location is set on the server session
-        # Payload should have state_code, dist_code, court_complex_code
-        state = payload.get('state_code')
-        dist = payload.get('dist_code')
-        complex_code = payload.get('court_complex_code')
-        
-        if state and dist and complex_code:
-            # We run this sync in threadpool to ensure session on server is updated
-            resp = await run_in_threadpool(client.set_data, state, dist, complex_code)
-            print(f"DEBUG: set_data response: {resp.text[:200]}")
 
-            # ✅ persist refreshed token
-            if client.current_token and client.current_token != session.app_token:
-                session.app_token = client.current_token
-                await session.save()
-    
-    # Perform search with retry logic
+    max_attempts = 5   # 🔥 NOW 5 ATTEMPTS
     attempts = 0
-    max_attempts = 2
-    
+
     while attempts < max_attempts:
         attempts += 1
         try:
-             # Ensure client has fresh token from session if it changed
             if session.app_token:
                 client.current_token = session.app_token
 
-            print(f"DEBUG: submit_captcha Attempt {attempts} | Mode: {mode} | Token: {client.current_token[:10]}...")
-            
-            response = None
+            print(f"DEBUG: submit_captcha Attempt {attempts} | Mode: {mode}")
+
             if mode == 'cnr':
                 search_payload = {
-                     "cino": payload.get("cnr"),
-                     "fcaptcha_code": captcha_code
+                    "cino": payload.get("cnr"),
+                    "fcaptcha_code": captcha_code
                 }
-                response = await run_in_threadpool(client.search_cnr, search_payload)
-            
+                response = await retry_request(
+                    client.search_cnr,
+                    search_payload,
+                    attempts=3
+                )
+
             elif mode == 'party':
-                # payload already has structure from start_session, but we need to clean complex code
-                search_payload = payload.copy() # Don't mutate session payload
+                search_payload = payload.copy()
                 search_payload['fcaptcha_code'] = captcha_code
-                
-                # Check complex code and clean if necessary
+
                 cc = search_payload.get('court_complex_code', '')
                 if '@' in cc:
                     search_payload['court_complex_code'] = cc.split('@')[0]
-                    
-                response = await run_in_threadpool(client.search_party, search_payload)
-                
+
+                response = await retry_request(
+                    client.search_party,
+                    search_payload,
+                    attempts=3
+                )
+
             elif mode == 'advocate':
                 search_payload = payload.copy()
                 search_payload['adv_captcha_code'] = captcha_code
-                
+
                 cc = search_payload.get('court_complex_code', '')
                 if '@' in cc:
                     search_payload['court_complex_code'] = cc.split('@')[0]
-                
-                response = await run_in_threadpool(client.search_advocate, search_payload)
-            
-            if not response:
-                raise Exception("Search method not implemented or failed")
 
-            try:
-                result_json = response.json()
-            except:
-                 print(f"DEBUG: Invalid JSON. Response text: {response.text[:500]}...")
-                 raise RetryableError("Invalid JSON response from eCourts")
+                response = await retry_request(
+                    client.search_advocate,
+                    search_payload,
+                    attempts=3
+                )
 
-            # Check for token refresh in response
+            else:
+                raise Exception("Invalid search mode")
+
+            result_json = response.json()
+
+            # Token refresh
             new_token = result_json.get('app_token')
             if new_token and new_token != session.app_token:
-                print(f"DEBUG: Token refreshed in search response: {new_token[:10]}...")
                 session.app_token = new_token
                 await session.save()
-                
-                # If we got an error message with a new token, we MUST retry
-                if result_json.get('errormsg'):
-                     print(f"DEBUG: Error with new token, retrying... Msg: {result_json.get('errormsg')}")
-                     continue
 
             if "Invalid Captcha" in str(result_json):
-                session.state = STATE_CAPTCHA_REQUIRED
-                await session.save()
                 raise CaptchaError("Invalid Captcha")
-            
-            if "No Record Found" in str(result_json):
-                 session.state = STATE_FAILED
-                 session.set_error("No Record Found")
-                 await session.save()
-                 return
 
-            # --- SUCCESS PATHS ---
-            
-            # Path A: Direct Details (CNR)
-            html_content = result_json.get('cino_data') or result_json.get('data_list') or result_json.get('casetype_list')
-            
-            # Additional check for CNR: sometimes 'cino' search returns raw HTML in weird keys? 
-            # Usually cino_data
-            
+            if "No Record Found" in str(result_json):
+                session.state = STATE_FAILED
+                session.set_error("No Record Found")
+                await session.save()
+                return
+
+            html_content = (
+                result_json.get('cino_data')
+                or result_json.get('data_list')
+                or result_json.get('casetype_list')
+            )
+
             if mode == 'cnr' and html_content:
                 session.update_payload({"result_html": html_content})
                 session.state = STATE_SEARCH_SUBMITTED
                 await session.save()
-                return 
+                return
 
-            # Path B: Case List (Party/Advocate)
-            # data keys: party_data or adv_data
-            list_html = result_json.get('party_data') or result_json.get('adv_data') or result_json.get('data_list')
-            
+            list_html = (
+                result_json.get('party_data')
+                or result_json.get('adv_data')
+            )
+
             if mode in ['party', 'advocate'] and list_html:
                 session.update_payload({"list_html": list_html})
                 session.state = STATE_CASE_LIST_LOADED
                 await session.save()
                 return
 
-            # If we are here, we might have an error message or just no data
-            err_msg = result_json.get('errormsg', 'Unknown Error')
-            print(f"DEBUG: Search failed but no exception. Msg: {err_msg}")
-            
-            if "Invalid Request" in err_msg or "Something went wrong" in err_msg:
-                # Likely token issue or transient failure. Retry if attempts left.
-                if attempts < max_attempts:
-                    continue
+        except CaptchaError:
+            print(f"Invalid captcha on attempt {attempts}")
+            if attempts >= max_attempts:
+                raise
+            continue
 
-            session.state = STATE_FAILED
-            session.set_error(f"Search failed: {err_msg}")
-            await session.save()
-            return
-            
         except Exception as e:
-            print(f"DEBUG: Exception in search attempt {attempts}: {e}")
+            print(f"Search attempt {attempts} failed: {e}")
             if attempts >= max_attempts:
                 session.set_error(str(e))
                 await session.save()
-                raise e
+                raise
+            await asyncio.sleep(1)
 
 async def fetch_results(session_id: str) -> Dict[str, Any]:
     print(f"DEBUG: fetch_results for {session_id}")
@@ -264,7 +407,12 @@ async def fetch_results(session_id: str) -> Dict[str, Any]:
                             'nextdate1': b_args[2] if len(b_args) > 2 else ''
                         }
                         # Run sync request in threadpool
-                        biz_text = await run_in_threadpool(client.view_business, b_payload)
+                        # biz_text = await run_in_threadpool(client.view_business, b_payload)
+                        biz_text = await retry_request(
+                            client.view_business,
+                            b_payload,
+                            attempts=3
+                        )
 
                         # 🔥 CRITICAL FIX
                         session.app_token = client.current_token
@@ -287,37 +435,80 @@ async def fetch_results(session_id: str) -> Dict[str, Any]:
                 p_args = row.get("pdf_link_args")
                 if p_args and len(p_args) >= 4:
                     try:
-                         # Construct payload
-                         # displayPdf('normal_v', 'case_val', 'court_code', 'filename', 'appFlag')
-                         p_payload = {
+                        # Construct payload
+                        # displayPdf('normal_v', 'case_val', 'court_code', 'filename', 'appFlag')
+                        p_payload = {
                             'normal_v': p_args[0], 'case_val': p_args[1], 
                             'court_code': p_args[2], 'filename': p_args[3],
                             'appFlag': p_args[4] if len(p_args) > 4 else ''
-                         }
+                        }
                          
-                         filename_local = f"order_{idx+1}.pdf"
+                        #  filename_local = f"order_{idx+1}.pdf"
                          
-                         # 1. Trigger Generation
-                         await run_in_threadpool(client.display_pdf, p_payload)
+                        #  # 1. Trigger Generation
+                        #  await run_in_threadpool(client.display_pdf, p_payload)
 
-                         # 🔥 CRITICAL FIX
-                         session.app_token = client.current_token
-                         session.cookies = client.get_cookies()
-                         await session.save()
+                        #  # 🔥 CRITICAL FIX
+                        #  session.app_token = client.current_token
+                        #  session.cookies = client.get_cookies()
+                        #  await session.save()
                          
-                         # 2. Download Bytes
-                         # Note: display_pdf usually returns HTML/Text status, the PDF is at report URL
-                         # We need to wait a sec? Sync script slept 1s.
-                         await asyncio.sleep(1) 
+                        #  # 2. Download Bytes
+                        #  # Note: display_pdf usually returns HTML/Text status, the PDF is at report URL
+                        #  # We need to wait a sec? Sync script slept 1s.
+                        #  await asyncio.sleep(1) 
                          
-                         pdf_bytes = await run_in_threadpool(client.get_pdf_bytes)
+                        #  pdf_bytes = await run_in_threadpool(client.get_pdf_bytes)
                          
-                         if pdf_bytes:
-                             files[filename_local] = pdf_bytes.hex() # Store as hex string (JSON serializable)
-                             row["pdf_filename"] = filename_local
-                             print(f"DEBUG: Downloaded {filename_local}")
-                         else:
-                             print(f"WARN: Failed to download PDF bytes for order {idx+1}")
+                        #  if pdf_bytes:
+                        #     #  files[filename_local] = pdf_bytes.hex() # Store as hex string (JSON serializable)
+                        #     #  row["pdf_filename"] = filename_local
+
+                        #     storage = get_storage()
+
+                        #     storage_path = f"{session_id}/{filename_local}"
+                        #     saved_path = await storage.save(storage_path, pdf_bytes)
+
+                        #     files[filename_local] = saved_path
+                        #     row["pdf_filename"] = filename_local
+                        #     row["file_path"] = saved_path
+                        #     print(f"DEBUG: Downloaded {filename_local}")
+                        #  else:
+                        #      print(f"WARN: Failed to download PDF bytes for order {idx+1}")
+                        filename_local = f"order_{idx+1}.pdf"
+
+                        # 1️⃣ Trigger PDF generation with retry
+                        await retry_request(
+                            client.display_pdf,
+                            p_payload,
+                            attempts=3
+                        )
+
+                        # Persist updated token
+                        session.app_token = client.current_token
+                        session.cookies = client.get_cookies()
+                        await session.save()
+
+                        await asyncio.sleep(1)
+
+                        # 2️⃣ Download PDF with retry
+                        pdf_bytes = await retry_request(
+                            client.get_pdf_bytes,
+                            attempts=3
+                        )
+
+                        if pdf_bytes:
+                            storage = get_storage()
+                            storage_path = f"{session_id}/{filename_local}"
+                            saved_path = await storage.save(storage_path, pdf_bytes)
+
+                            files[filename_local] = saved_path
+                            row["pdf_filename"] = filename_local
+                            row["file_path"] = saved_path
+
+                            print(f"DEBUG: Downloaded {filename_local}")
+                        else:
+                            print(f"WARN: Failed to download PDF bytes for order {idx+1}")
                              
                     except Exception as e:
                         print(f"WARN: Failed to process PDF for order {idx+1}: {e}")
@@ -355,7 +546,6 @@ async def fetch_results(session_id: str) -> Dict[str, Any]:
     
     else:
         return {"state": session.state, "error": session.data.get("last_error")}
-
 
 async def get_case_list(session_id: str):
     """"For Party/Advocate search, returns the list of cases to select from."""
@@ -491,7 +681,8 @@ async def select_case(session_id: str, case_index: int):
             
             "petitioner": parsed.get("petitioner"),
             "respondent": parsed.get("respondent"),
-            "court_heading": parsed.get("court_heading")
+            "court_heading": parsed.get("court_heading"),
+            "case_index": case_index
         }
         
         return {"status": "success", "cnr": args[1], "metadata": metadata}

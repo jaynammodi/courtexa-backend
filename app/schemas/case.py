@@ -133,6 +133,16 @@ class CaseHistorySchema(BaseModel):
     class Config:
         from_attributes = True
 
+class CaseOrderSchema(BaseModel):
+    id: UUID
+    order_no: Optional[str] = None
+    order_date: Optional[date] = None
+    details: Optional[str] = None
+    pdf_filename: Optional[str] = None
+    file_path: Optional[str] = None
+
+    class Config:
+        from_attributes = True
 
 class HearingResponse(BaseModel):
     id: UUID
@@ -181,7 +191,8 @@ class Case(CaseBase):
     parties: CasePartiesUnified
     acts: List[CaseActSchema] = []
     history: List[CaseHistorySchema] = []
-    
+    orders: List[CaseOrderSchema] = []
+
     links: Optional[CaseLinks] = None
 
     created_at: datetime

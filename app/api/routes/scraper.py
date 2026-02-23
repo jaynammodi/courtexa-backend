@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 from uuid import UUID
 from app.services.scraper.client import ECourtsClient
 from app.services.scraper.utils import parse_options_html
+from app.services.storage import get_storage
 from bs4 import BeautifulSoup
 import time
 import base64
@@ -250,20 +251,39 @@ async def get_status(
 
 @router.get("/pdf/{session_id}/{filename}")
 async def get_case_pdf(
-    session_id: str, 
+    session_id: str,
     filename: str,
     current_user: User = Depends(deps.get_current_active_user)
 ):
+    """
+    Returns stored PDF for a scraped case.
+    Frontend-safe.
+    """
+
     try:
         session = await ScraperSession.get(session_id)
+
         files = session.data.get("files", {})
-        
-        hex_content = files.get(filename)
-        if not hex_content:
-            raise HTTPException(status_code=404, detail="File not found")
-            
-        pdf_bytes = bytes.fromhex(hex_content)
-        return Response(content=pdf_bytes, media_type="application/pdf")
+        stored_path = files.get(filename)
+
+        if not stored_path:
+            raise HTTPException(status_code=404, detail="PDF not found")
+
+        storage = get_storage()
+
+        pdf_bytes = await storage.read(stored_path)
+
+        if not pdf_bytes:
+            raise HTTPException(status_code=404, detail="PDF file missing")
+
+        return Response(
+            content=pdf_bytes,
+            media_type="application/pdf",
+            headers={
+                "Content-Disposition": f'inline; filename="{filename}"'
+            }
+        )
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -447,6 +467,17 @@ async def save_case_to_workspace(
                 judge=h["judge"],
                 source=h["source"]
             ))
+
+        # Orders
+        for o in data.get("orders", []):
+            db.add(CaseOrder(
+                case_id=case_obj.id,
+                order_no=o.get("order_no"),
+                order_date=o.get("order_date"),
+                details=o.get("details"),
+                pdf_filename=o.get("pdf_filename"),
+                file_path=o.get("file_path"),
+            ))
             
         db.commit()
         db.refresh(case_obj)
@@ -568,6 +599,16 @@ async def save_multiple_cases(
                     notes=h["notes"],
                     judge=h["judge"],
                     source=h["source"]
+                ))
+            
+            for o in data.get("orders", []):
+                db.add(CaseOrder(
+                    case_id=case_obj.id,
+                    order_no=o.get("order_no"),
+                    order_date=o.get("order_date"),
+                    details=o.get("details"),
+                    pdf_filename=o.get("pdf_filename"),
+                    file_path=o.get("file_path"),
                 ))
 
             saved_cases.append(case_obj)
