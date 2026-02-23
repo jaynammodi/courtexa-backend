@@ -9,6 +9,7 @@ from app.api.routes import auth, users, workspaces, appointments, availability, 
 from app.db.session import SessionLocal
 from app.models.workspace_refresh_job import WorkspaceRefreshJob
 from datetime import datetime
+from rich import print
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
@@ -62,11 +63,11 @@ def cleanup_refresh_jobs_on_startup():
             job.finished_at = datetime.utcnow()
 
         db.commit()
-        print(f"[startup] Marked {len(running_jobs)} stale refresh jobs as aborted")
+        print(f"[bold cyan]STARTUP[/bold cyan]: Marked {len(running_jobs)} stale refresh jobs as aborted")
 
     except Exception as e:
         db.rollback()
-        print("[startup] cleanup failed:", e)
+        print(f"[bold cyan]STARTUP[/bold cyan]: cleanup failed:", e)
 
     finally:
         db.close()
@@ -87,11 +88,11 @@ def cleanup_refresh_jobs_on_shutdown():
             job.finished_at = datetime.utcnow()
 
         db.commit()
-        print(f"[shutdown] Marked {len(running_jobs)} refresh jobs as aborted")
+        print(f"[bold red]SHUTDOWN[/bold red]: Marked {len(running_jobs)} refresh jobs as aborted")
 
     except Exception as e:
         db.rollback()
-        print("[shutdown] cleanup failed:", e)
+        print("[bold red]SHUTDOWN[/bold red]: cleanup failed:", e)
 
     finally:
         db.close()

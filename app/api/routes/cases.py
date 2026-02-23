@@ -156,6 +156,7 @@ async def perform_full_case_refresh(case_id: UUID, job_id: UUID | None = None):
                 source=h["source"]
             ))
 
+        pprint(data.get("orders", []))
         for o in data.get("orders", []):
             db.add(CaseOrder(
                 case_id=case.id,
@@ -275,40 +276,97 @@ def create_case(
     db.refresh(case)
     return case
 
+# @router.post("/refresh-all", status_code=202)
+# def refresh_all_cases(
+#     *,
+#     workspace: Workspace = Depends(deps.get_current_workspace),
+#     background_tasks: BackgroundTasks,
+#     db: Session = Depends(get_db),
+# ):
+#     # cases = db.query(Case).filter(
+#     #     Case.workspace_id == workspace.id,
+#     #     Case.internal_status == "active"
+#     # ).all()
+#     now = datetime.utcnow()
+#     twelve_hours_ago = now - timedelta(hours=12)
+#     today = date.today()
+
+#     cases = db.query(Case).filter(
+#         Case.workspace_id == workspace.id,
+#         Case.internal_status == "active",
+
+#         # Not refreshed in last 12 hours
+#         or_(
+#             Case.sync_last_synced_at == None,
+#             Case.sync_last_synced_at < twelve_hours_ago
+#         ),
+
+#         # Only cases whose next hearing is today or earlier
+#         Case.next_hearing_date != None,
+#         Case.next_hearing_date <= today
+#     ).all()
+
+#     if not cases:
+#         return {"status": "no_cases"}
+
+#     # 1️⃣ Create job
+#     job = WorkspaceRefreshJob(
+#         workspace_id=workspace.id,
+#         total_cases=len(cases),
+#         completed_cases=0,
+#         failed_cases=0,
+#         status="running"
+#     )
+
+#     db.add(job)
+#     db.commit()
+#     db.refresh(job)
+
+#     # 2️⃣ Queue background tasks
+#     for case in cases:
+#         case.sync_status = "queued"
+
+#         background_tasks.add_task(
+#             perform_full_case_refresh,
+#             case.id,
+#             job.id
+#         )
+
+#     db.commit()
+
+#     return {
+#         "job_id": job.id,
+#         "total": job.total_cases,
+#         "status": job.status
+#     }
+
 @router.post("/refresh-all", status_code=202)
-def refresh_all_cases(
-    *,
+async def refresh_all_cases(
     workspace: Workspace = Depends(deps.get_current_workspace),
-    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
 ):
-    # cases = db.query(Case).filter(
-    #     Case.workspace_id == workspace.id,
-    #     Case.internal_status == "active"
-    # ).all()
+
     now = datetime.utcnow()
     twelve_hours_ago = now - timedelta(hours=12)
     today = date.today()
 
+    # cases = db.query(Case).filter(
+    #     Case.workspace_id == workspace.id,
+    #     Case.internal_status == "active",
+    #     or_(
+    #         Case.sync_last_synced_at == None,
+    #         Case.sync_last_synced_at < twelve_hours_ago
+    #     ),
+    #     Case.next_hearing_date != None,
+    #     Case.next_hearing_date <= today
+    # ).all()
     cases = db.query(Case).filter(
         Case.workspace_id == workspace.id,
-        Case.internal_status == "active",
-
-        # Not refreshed in last 12 hours
-        or_(
-            Case.sync_last_synced_at == None,
-            Case.sync_last_synced_at < twelve_hours_ago
-        ),
-
-        # Only cases whose next hearing is today or earlier
-        Case.next_hearing_date != None,
-        Case.next_hearing_date <= today
     ).all()
 
     if not cases:
         return {"status": "no_cases"}
 
-    # 1️⃣ Create job
     job = WorkspaceRefreshJob(
         workspace_id=workspace.id,
         total_cases=len(cases),
@@ -321,23 +379,34 @@ def refresh_all_cases(
     db.commit()
     db.refresh(job)
 
-    # 2️⃣ Queue background tasks
     for case in cases:
         case.sync_status = "queued"
 
-        background_tasks.add_task(
-            perform_full_case_refresh,
-            case.id,
+    db.commit()
+
+    # 🚀 Launch concurrent refresh pool
+    asyncio.create_task(
+        run_refresh_pool(
+            [c.id for c in cases],
             job.id
         )
-
-    db.commit()
+    )
 
     return {
         "job_id": job.id,
         "total": job.total_cases,
+        "workers": MAX_REFRESH_WORKERS,
         "status": job.status
     }
+
+async def run_refresh_pool(case_ids: list[UUID], job_id: UUID):
+    semaphore = asyncio.Semaphore(MAX_REFRESH_WORKERS)
+
+    async def worker(case_id):
+        async with semaphore:
+            await perform_full_case_refresh(case_id, job_id)
+
+    await asyncio.gather(*(worker(cid) for cid in case_ids))
 
 @router.get("/refresh-jobs/{job_id}")
 def get_refresh_job_status(

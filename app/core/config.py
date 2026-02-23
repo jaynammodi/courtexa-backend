@@ -13,6 +13,12 @@ class Settings(BaseSettings):
     POSTGRES_DB: str
     POSTGRES_PORT: int = 5432
 
+    # Database pool tuning
+    DB_POOL_SIZE: int = 20
+    DB_MAX_OVERFLOW: int = 40
+    DB_POOL_TIMEOUT: int = 30
+    DB_POOL_RECYCLE: int = 1800
+
     FILE_STORAGE: str = "local"   # local | s3
     S3_BUCKET: str | None = None
     S3_REGION: str | None = None
