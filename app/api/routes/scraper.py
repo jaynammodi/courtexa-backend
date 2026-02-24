@@ -1,4 +1,5 @@
 from rich.pretty import pprint
+from rich import print
 from fastapi import APIRouter, HTTPException, Response, Depends, Query
 from app.schemas.scraper import StartCaseRequest, CaptchaSubmitRequest, SessionStatusResponse, CaseResultResponse, SelectCaseRequest, MultiSelectRequest, MultiSaveRequest
 from app.schemas.sidebar import SidebarInitRequest, SidebarInitResponse, SidebarSubmitRequest
@@ -145,7 +146,6 @@ async def get_cases_list_route(
 
         result = await get_case_list(session_id)
         cases = result.get("cases")
-        pprint(cases)
 
         if not cases:
             return []
@@ -155,7 +155,7 @@ async def get_cases_list_route(
         return result
 
     except Exception as e:
-        print(e)
+        print(f"[bold red]ERROR[/bold red]: Error in get_cases_list_route:",e)
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/select-case/{session_id}")
@@ -168,7 +168,7 @@ async def select_case_endpoint(
         result = await select_case(session_id, request.case_index)
         return result
     except Exception as e:
-        print("DEBUG:", e)
+        print(f"[bold red]ERROR[/bold red]: Error in select_case_endpoint:",e)
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/select-multiple/{session_id}")
@@ -474,9 +474,10 @@ async def save_case_to_workspace(
                 case_id=case_obj.id,
                 order_no=o.get("order_no"),
                 order_date=o.get("order_date"),
-                details=o.get("details"),
+                order_details=o.get("order_details"),
                 pdf_filename=o.get("pdf_filename"),
                 file_path=o.get("file_path"),
+                file_size=o.get("file_size")
             ))
             
         db.commit()
@@ -485,7 +486,7 @@ async def save_case_to_workspace(
 
     except Exception as e:
         db.rollback()
-        print(e)
+        print(f"[bold red]ERROR[/bold red]: Error in save_case_to_db:",e)
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/save-multiple/{session_id}")
@@ -502,8 +503,6 @@ async def save_multiple_cases(
     """
     saved_cases = []
     limits = get_user_plan_limits(current_user)
-
-    pprint(request)
 
     if len(request.case_indices) > limits.multi_save:
         raise HTTPException(
@@ -606,9 +605,10 @@ async def save_multiple_cases(
                     case_id=case_obj.id,
                     order_no=o.get("order_no"),
                     order_date=o.get("order_date"),
-                    details=o.get("details"),
+                    order_details=o.get("order_details"),
                     pdf_filename=o.get("pdf_filename"),
                     file_path=o.get("file_path"),
+                    file_size=o.get("file_size")
                 ))
 
             saved_cases.append(case_obj)
@@ -667,8 +667,6 @@ async def sidebar_submit(
         session.is_dirty = True
 
         await session.save()
-
-        pprint(session.data)
 
         await submit_captcha(request.session_id, request.captcha)
 

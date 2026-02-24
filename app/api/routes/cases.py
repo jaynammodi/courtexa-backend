@@ -18,6 +18,7 @@ from datetime import datetime, timedelta
 from app.services.storage import get_storage
 from sqlalchemy import or_
 from datetime import datetime, timedelta, date
+from rich import print
 
 JOB_TIMEOUT_MINUTES = 15
 
@@ -31,13 +32,15 @@ MAX_REFRESH_WORKERS = int(os.getenv("MAX_REFRESH_WORKERS", 8))
 
 async def perform_full_case_refresh(case_id: UUID, job_id: UUID | None = None):
     db = SessionLocal()
-    print("Running background refresh for", case_id)
+    print(f"[bold yellow]REQUEST[/bold yellow]: Running background refresh for {case_id}")
     job = None
 
     try:
         case = db.query(Case).filter(Case.id == case_id).first()
         if not case:
             return
+
+        print(f"[bold cyan]CNR: Running background refresh for {case.cino}[/bold cyan]")
 
         if job_id:
             job = db.query(WorkspaceRefreshJob).filter(
@@ -119,7 +122,7 @@ async def perform_full_case_refresh(case_id: UUID, job_id: UUID | None = None):
                 try:
                     await storage.delete(order.file_path)
                 except Exception as e:
-                    print("Failed to delete old PDF:", order.file_path, e)
+                    print(f"[bold blue]PDF[/bold blue]: [bold red]ERROR[/bold red]: Failed to delete old PDF:", order.file_path, e)
 
         # Now delete DB rows
         db.query(CaseOrder).filter(
@@ -156,15 +159,15 @@ async def perform_full_case_refresh(case_id: UUID, job_id: UUID | None = None):
                 source=h["source"]
             ))
 
-        pprint(data.get("orders", []))
         for o in data.get("orders", []):
             db.add(CaseOrder(
                 case_id=case.id,
                 order_no=o.get("order_no"),
                 order_date=o.get("order_date"),
-                details=o.get("details"),
+                order_details=o.get("order_details"),
                 pdf_filename=o.get("pdf_filename"),
                 file_path=o.get("file_path"),
+                file_size=o.get("file_size"),
             ))
 
         if job:
@@ -184,7 +187,7 @@ async def perform_full_case_refresh(case_id: UUID, job_id: UUID | None = None):
 
         # SINGLE COMMIT
         db.commit()
-        print("Refreshed case", case_id)
+        print(f"[bold green]SUCCESS: Refreshed case {case_id}: {case.cino}[/bold green]")
 
     except Exception:
         db.rollback()
@@ -500,8 +503,7 @@ def refresh_case_data(
         Case.workspace_id == workspace.id
     ).first()
 
-    print(" [] REFRESHING CASE {} ".format(id))
-    pprint(case)
+    print(f"[bold yellow]REFRESHING CASE[/bold yellow]:", id)
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
 
@@ -545,7 +547,7 @@ async def delete_case(
                 try:
                     await storage.delete(order.file_path)
                 except Exception as e:
-                    print("Failed to delete PDF:", order.file_path, e)
+                    print(f"[bold blue]PDF[/bold blue]: [bold red]ERROR[/bold red]: Failed to delete PDF:", order.file_path, e)
 
         db.delete(case)
         db.commit()

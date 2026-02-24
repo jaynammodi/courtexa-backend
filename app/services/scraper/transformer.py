@@ -157,9 +157,10 @@ def transform_to_schema(scraped_data: Dict[str, Any], cino: str) -> CaseSchema:
         orders.append(CaseOrderSchema(
             order_no=row.get("order_no"),
             order_date=row.get("order_date"),
-            details=row.get("details"),
+            order_details=row.get("order_details"),
             pdf_filename=row.get("pdf_filename"), # This will be populated in flows.py
-            file_path=row.get("file_path")
+            file_path=row.get("file_path"),
+            file_size=row.get("file_size")
         ))
 
     # --- 7. Construct Summary & Title ---

@@ -18,3 +18,5 @@ Pillow
 pytesseract
 Pillow
 boto3
+python-slugify
+tinycss2

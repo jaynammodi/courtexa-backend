@@ -4,6 +4,7 @@ import requests
 from bs4 import BeautifulSoup
 from typing import Optional, Dict, Tuple
 from app.core.config import settings
+from rich import print
 
 # Use settings for Base URL
 # Default fallback to ecourts if not in settings, but we added nothing to settings yet for Base URL
@@ -27,7 +28,7 @@ def extract_token_from_json(response):
         data = response.json()
         token = data.get('token') or data.get('app_token')
         if token:
-            print(f"DEBUG: Extracted new token: {token[:10]}...")
+            print(f"[bold magenta]TOKEN: Extracted new token: {token}[/bold magenta]")
         return token
     except:
         return None
@@ -52,7 +53,7 @@ class ECourtsClient:
         new_token = extract_token_from_json(response)
         if new_token:
             self.current_token = new_token
-            print(f"DEBUG: Token updated in client to: {self.current_token[:10]}...")
+            print(f"[bold green]TOKEN: Token updated in client to: {self.current_token}[/bold green]")
 
     def _post(self, endpoint, data):
         """Wrapper for POST requests with auto token injection and update."""
@@ -64,7 +65,7 @@ class ECourtsClient:
         if 'ajax_req' not in data:
             data['ajax_req'] = 'true'
 
-        print(f"DEBUG: POST {endpoint} | Token: {data.get('app_token')[:10] if data.get('app_token') else 'None'}")
+        print(f"[bold bright_magenta]ECOURTS[/bold bright_magenta]: POST {endpoint} | Token: {data.get('app_token')[:10] if data.get('app_token') else 'None'}")
         
         resp = self.session.post(url, data=data)
         self._update_token(resp)
@@ -79,7 +80,7 @@ class ECourtsClient:
         if 'X-Requested-With' in page_headers: del page_headers['X-Requested-With']
         if 'Content-Type' in page_headers: del page_headers['Content-Type']
         
-        print(f"DEBUG: GET Initial {url}")
+        print(f"[bold bright_magenta]ECOURTS[/bold bright_magenta]: GET Initial {url}")
         resp = self.session.get(url, headers=page_headers)
         
         # Scrape token
@@ -91,7 +92,7 @@ class ECourtsClient:
             match = re.search(r'app_token\s*=\s*["\']([^"\']+)["\']', resp.text)
             if match: self.current_token = match.group(1)
             
-        print(f"DEBUG: Initial Token: {self.current_token[:10] if self.current_token else 'None'}")
+        print(f"[bold bright_magenta]ECOURTS[/bold bright_magenta]: Initial Token: {self.current_token[:10] if self.current_token else 'None'}")
         return self.current_token, resp.text
 
     def get_captcha(self) -> bytes:
@@ -106,7 +107,7 @@ class ECourtsClient:
         if 'Content-Type' in img_headers: del img_headers['Content-Type']
         if 'X-Requested-With' in img_headers: del img_headers['X-Requested-With']
         
-        print(f"DEBUG: GET Captcha Image")
+        print(f"[bold bright_magenta]ECOURTS[/bold bright_magenta]: GET Captcha Image")
         # Trigger
         self.session.get(img_url, headers=img_headers)
         # Download

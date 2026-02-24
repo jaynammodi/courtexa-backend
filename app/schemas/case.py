@@ -137,9 +137,10 @@ class CaseOrderSchema(BaseModel):
     id: UUID
     order_no: Optional[str] = None
     order_date: Optional[date] = None
-    details: Optional[str] = None
+    order_details: Optional[str] = None
     pdf_filename: Optional[str] = None
     file_path: Optional[str] = None
+    file_size: Optional[int] = None
 
     class Config:
         from_attributes = True

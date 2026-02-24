@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime, date
 
-from sqlalchemy import Column, String, DateTime, ForeignKey, Boolean, Date, Text, ARRAY
+from sqlalchemy import Column, String, DateTime, ForeignKey, Boolean, Date, Text, ARRAY, Integer
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 
@@ -252,10 +252,11 @@ class CaseOrder(Base):
 
     order_no = Column(String, nullable=True)
     order_date = Column(Date, nullable=True)
-    details = Column(Text, nullable=True)
+    order_details = Column(Text, nullable=True)
     
     pdf_filename = Column(String, nullable=True) # stored filename
     file_path = Column(String, nullable=True)  # full storage path
+    file_size = Column(Integer, nullable=True) # file size in bytes
     
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 

@@ -67,7 +67,7 @@ def cleanup_refresh_jobs_on_startup():
 
     except Exception as e:
         db.rollback()
-        print(f"[bold cyan]STARTUP[/bold cyan]: cleanup failed:", e)
+        print(f"[bold cyan]STARTUP[/bold cyan]: [bold red]ERROR[/bold red]: cleanup failed:", e)
 
     finally:
         db.close()
@@ -92,7 +92,7 @@ def cleanup_refresh_jobs_on_shutdown():
 
     except Exception as e:
         db.rollback()
-        print("[bold red]SHUTDOWN[/bold red]: cleanup failed:", e)
+        print(f"[bold red]SHUTDOWN[/bold red]: [bold red]ERROR[/bold red]: cleanup failed:", e)
 
     finally:
         db.close()

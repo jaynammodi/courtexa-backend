@@ -21,5 +21,5 @@ def solve_captcha(image_bytes: bytes) -> str:
         clean_text = "".join(c for c in text if c.isalnum())
         return clean_text
     except Exception as e:
-        print(f"OCR Failed: {e}")
+        print(f"[bold bright_cyan]OCR[/bold bright_cyan]: [bold red]ERROR[/bold red]: OCR Failed: {e}")
         return ""

@@ -2,6 +2,7 @@
 import re
 import html
 import bleach
+from bleach.css_sanitizer import CSSSanitizer
 from bs4 import BeautifulSoup
 from datetime import datetime
 
@@ -207,6 +208,25 @@ def sanitize_html(html_fragment):
     raw_html = str(container)
 
     # final bleach sanitize (preserve layout)
+    css_sanitizer = CSSSanitizer(
+        allowed_css_properties=[
+            "text-align",
+            "font-weight",
+            "font-style",
+            "text-decoration",
+            "color",
+            "background-color",
+            "border",
+            "border-collapse",
+            "border-spacing",
+            "width",
+            "height",
+            "padding",
+            "margin",
+            "vertical-align",
+            "font-size"
+        ]
+    )
     clean_html = bleach.clean(
         raw_html,
         tags=[
@@ -221,7 +241,9 @@ def sanitize_html(html_fragment):
                 "cellpadding", "cellspacing" 
             ]
         },
+        css_sanitizer=css_sanitizer,
         strip=True
+        
     )
 
     return clean_html
@@ -324,10 +346,11 @@ def parse_full_case_data(html_content):
                 continue
             
             # Order Number | Date | Order Details (Link)
+            print(normalize_date(clean_text(cols[1].text)))
             o_row = {
                 "order_no": clean_text(cols[0].text),
-                "date": normalize_date(clean_text(cols[1].text)),
-                "details": clean_text(cols[2].text),
+                "order_date": normalize_date(clean_text(cols[1].text)),
+                "order_details": clean_text(cols[2].text),
                 "pdf_link_args": None
             }
             
