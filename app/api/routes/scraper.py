@@ -19,6 +19,133 @@ from app.services.storage import get_storage
 from bs4 import BeautifulSoup
 import time
 import base64
+import asyncio
+import os
+from app.db.session import SessionLocal
+
+MAX_MULTI_SAVE_WORKERS = int(os.getenv("MAX_MULTI_SAVE_WORKERS", 5))
+
+async def perform_multi_save_case(
+    cnr: str,
+    workspace_id: UUID,
+    job_id: UUID | None = None,
+):
+    db = SessionLocal()
+
+    try:
+        # 🔁 Scrape fresh using CNR
+        from app.services.scraper.flows import refresh_case
+
+        result = await refresh_case(cnr, max_retries=5)
+
+        if not result or not result.get("data"):
+            return
+
+        data = result["data"]["structured_data"]
+
+        # 🚫 Skip if already exists
+        existing = db.query(Case).filter(
+            Case.cino == cnr,
+            Case.workspace_id == workspace_id
+        ).first()
+
+        if existing:
+            return
+
+        # 🧱 Create Case
+        case_obj = Case(
+            workspace_id=workspace_id,
+            cino=cnr,
+            title=data["title"],
+            internal_status=data["internal_status"],
+            court_name=data["court"]["name"],
+            court_level=data["court"]["level"],
+            court_bench=data["court"]["bench"],
+            court_code=data["court"]["court_code"],
+            summary_petitioner=data["summary"]["petitioner"],
+            summary_respondent=data["summary"]["respondent"],
+            summary_short_title=data["summary"]["short_title"],
+            case_type=data["case_details"]["case_type"],
+            filing_number=data["case_details"]["filing_number"],
+            filing_date=data["case_details"]["filing_date"],
+            registration_number=data["case_details"]["registration_number"],
+            registration_date=data["case_details"]["registration_date"],
+            first_hearing_date=data["status"]["first_hearing_date"],
+            next_hearing_date=data["status"]["next_hearing_date"],
+            last_hearing_date=data["status"]["last_hearing_date"],
+            decision_date=data["status"]["decision_date"],
+            case_stage=data["status"]["case_stage"],
+            case_status_text=data["status"]["case_status_text"],
+            nature_of_disposal=data["status"]["nature_of_disposal"],
+            judge=data["status"]["judge"],
+            meta_scraped_at=data["meta_scraped_at"],
+            meta_source=data["meta_source"],
+            meta_source_url=data["meta_source_url"],
+            raw_html=data["raw_html"]
+        )
+
+        db.add(case_obj)
+        db.flush()
+
+        for p in data["parties"]:
+            db.add(CaseParty(
+                case_id=case_obj.id,
+                is_petitioner=p["is_petitioner"],
+                name=p["name"],
+                advocate=p["advocate"],
+                role=p["role"],
+                raw_text=p["raw_text"]
+            ))
+
+        for a in data["acts"]:
+            db.add(CaseAct(
+                case_id=case_obj.id,
+                act_name=a["act_name"],
+                section=a["section"],
+                act_code=a["act_code"]
+            ))
+
+        for h in data["history"]:
+            db.add(CaseHistory(
+                case_id=case_obj.id,
+                business_date=h["business_date"],
+                hearing_date=h["hearing_date"],
+                purpose=h["purpose"],
+                stage=h["stage"],
+                notes=h["notes"],
+                judge=h["judge"],
+                source=h["source"]
+            ))
+
+        for o in data.get("orders", []):
+            db.add(CaseOrder(
+                case_id=case_obj.id,
+                order_no=o.get("order_no"),
+                order_date=o.get("order_date"),
+                order_details=o.get("order_details"),
+                pdf_filename=o.get("pdf_filename"),
+                file_path=o.get("file_path"),
+                file_size=o.get("file_size")
+            ))
+
+        db.commit()
+
+    except Exception:
+        db.rollback()
+    finally:
+        db.close()
+
+async def run_multi_save_pool(
+    cnrs: list[str],
+    workspace_id: UUID
+):
+    semaphore = asyncio.Semaphore(MAX_MULTI_SAVE_WORKERS)
+
+    async def worker(cnr: str):
+        async with semaphore:
+            await perform_multi_save_case(cnr, workspace_id)
+
+    await asyncio.gather(*(worker(cnr) for cnr in cnrs))
 
 # ---- PLAN LIMITS (backend simulated) ----
 
@@ -489,140 +616,174 @@ async def save_case_to_workspace(
         print(f"[bold red]ERROR[/bold red]: Error in save_case_to_db:",e)
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.post("/save-multiple/{session_id}")
+# @router.post("/save-multiple/{session_id}")
+# async def save_multiple_cases(
+#     session_id: str,
+#     request: MultiSaveRequest,
+#     workspace_id: UUID = Query(...),
+#     db: Session = Depends(get_db),
+#     current_user: User = Depends(deps.get_current_active_user)
+# ):
+#     """
+#     Re-selects and saves multiple cases to DB.
+#     Backend authoritative scrape before saving.
+#     """
+#     saved_cases = []
+#     limits = get_user_plan_limits(current_user)
+
+#     if len(request.case_indices) > limits.multi_save:
+#         raise HTTPException(
+#             status_code=403,
+#             detail=f"Save limit exceeded ({limits.multi_save})"
+#         )
+
+#     try:
+#         for index in request.case_indices:
+
+#             # Select case
+#             await select_case(session_id, index)
+
+#             # Fetch structured data
+#             result = await fetch_results(session_id)
+
+#             if result.get("state") != "HISTORY_FETCHED" or not result.get("data"):
+#                 continue  # skip silently or raise depending on your preference
+
+#             data = result["data"]["structured_data"]
+#             cino = data["cino"]
+
+#             # Check existing
+#             existing_case = db.query(Case).filter(
+#                 Case.cino == cino,
+#                 Case.workspace_id == workspace_id
+#             ).first()
+
+#             if existing_case:
+#                 continue  # skip duplicates safely
+
+#             # ---- SAME LOGIC AS SINGLE SAVE ----
+
+#             case_obj = Case(
+#                 workspace_id=workspace_id,
+#                 cino=cino,
+#                 title=data["title"],
+#                 internal_status=data["internal_status"],
+#                 court_name=data["court"]["name"],
+#                 court_level=data["court"]["level"],
+#                 court_bench=data["court"]["bench"],
+#                 court_code=data["court"]["court_code"],
+#                 summary_petitioner=data["summary"]["petitioner"],
+#                 summary_respondent=data["summary"]["respondent"],
+#                 summary_short_title=data["summary"]["short_title"],
+#                 case_type=data["case_details"]["case_type"],
+#                 filing_number=data["case_details"]["filing_number"],
+#                 filing_date=data["case_details"]["filing_date"],
+#                 registration_number=data["case_details"]["registration_number"],
+#                 registration_date=data["case_details"]["registration_date"],
+#                 first_hearing_date=data["status"]["first_hearing_date"],
+#                 next_hearing_date=data["status"]["next_hearing_date"],
+#                 last_hearing_date=data["status"]["last_hearing_date"],
+#                 decision_date=data["status"]["decision_date"],
+#                 case_stage=data["status"]["case_stage"],
+#                 case_status_text=data["status"]["case_status_text"],
+#                 nature_of_disposal=data["status"]["nature_of_disposal"],
+#                 judge=data["status"]["judge"],
+#                 meta_scraped_at=data["meta_scraped_at"],
+#                 meta_source=data["meta_source"],
+#                 meta_source_url=data["meta_source_url"],
+#                 raw_html=data["raw_html"]
+#             )
+
+#             db.add(case_obj)
+#             db.flush()
+
+#             for p in data["parties"]:
+#                 db.add(CaseParty(
+#                     case_id=case_obj.id,
+#                     is_petitioner=p["is_petitioner"],
+#                     name=p["name"],
+#                     advocate=p["advocate"],
+#                     role=p["role"],
+#                     raw_text=p["raw_text"]
+#                 ))
+
+#             for a in data["acts"]:
+#                 db.add(CaseAct(
+#                     case_id=case_obj.id,
+#                     act_name=a["act_name"],
+#                     section=a["section"],
+#                     act_code=a["act_code"]
+#                 ))
+
+#             for h in data["history"]:
+#                 db.add(CaseHistory(
+#                     case_id=case_obj.id,
+#                     business_date=h["business_date"],
+#                     hearing_date=h["hearing_date"],
+#                     purpose=h["purpose"],
+#                     stage=h["stage"],
+#                     notes=h["notes"],
+#                     judge=h["judge"],
+#                     source=h["source"]
+#                 ))
+            
+#             for o in data.get("orders", []):
+#                 db.add(CaseOrder(
+#                     case_id=case_obj.id,
+#                     order_no=o.get("order_no"),
+#                     order_date=o.get("order_date"),
+#                     order_details=o.get("order_details"),
+#                     pdf_filename=o.get("pdf_filename"),
+#                     file_path=o.get("file_path"),
+#                     file_size=o.get("file_size")
+#                 ))
+
+#             saved_cases.append(case_obj)
+
+#         db.commit()
+
+#         return {
+#             "saved_count": len(saved_cases),
+#             "cases": saved_cases
+#         }
+
+#     except Exception as e:
+#         db.rollback()
+#         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/save-multiple/{session_id}", status_code=202)
 async def save_multiple_cases(
     session_id: str,
     request: MultiSaveRequest,
     workspace_id: UUID = Query(...),
-    db: Session = Depends(get_db),
     current_user: User = Depends(deps.get_current_active_user)
 ):
     """
-    Re-selects and saves multiple cases to DB.
-    Backend authoritative scrape before saving.
+    Concurrently saves multiple cases using CNR refresh flow.
     """
-    saved_cases = []
+
     limits = get_user_plan_limits(current_user)
 
-    if len(request.case_indices) > limits.multi_save:
+    if len(request.case_cnrs) > limits.multi_save:
         raise HTTPException(
             status_code=403,
             detail=f"Save limit exceeded ({limits.multi_save})"
         )
 
-    try:
-        for index in request.case_indices:
+    # 🚀 Launch concurrent pool (non-blocking)
+    asyncio.create_task(
+        run_multi_save_pool(
+            request.case_cnrs,
+            workspace_id
+        )
+    )
 
-            # Select case
-            await select_case(session_id, index)
-
-            # Fetch structured data
-            result = await fetch_results(session_id)
-
-            if result.get("state") != "HISTORY_FETCHED" or not result.get("data"):
-                continue  # skip silently or raise depending on your preference
-
-            data = result["data"]["structured_data"]
-            cino = data["cino"]
-
-            # Check existing
-            existing_case = db.query(Case).filter(
-                Case.cino == cino,
-                Case.workspace_id == workspace_id
-            ).first()
-
-            if existing_case:
-                continue  # skip duplicates safely
-
-            # ---- SAME LOGIC AS SINGLE SAVE ----
-
-            case_obj = Case(
-                workspace_id=workspace_id,
-                cino=cino,
-                title=data["title"],
-                internal_status=data["internal_status"],
-                court_name=data["court"]["name"],
-                court_level=data["court"]["level"],
-                court_bench=data["court"]["bench"],
-                court_code=data["court"]["court_code"],
-                summary_petitioner=data["summary"]["petitioner"],
-                summary_respondent=data["summary"]["respondent"],
-                summary_short_title=data["summary"]["short_title"],
-                case_type=data["case_details"]["case_type"],
-                filing_number=data["case_details"]["filing_number"],
-                filing_date=data["case_details"]["filing_date"],
-                registration_number=data["case_details"]["registration_number"],
-                registration_date=data["case_details"]["registration_date"],
-                first_hearing_date=data["status"]["first_hearing_date"],
-                next_hearing_date=data["status"]["next_hearing_date"],
-                last_hearing_date=data["status"]["last_hearing_date"],
-                decision_date=data["status"]["decision_date"],
-                case_stage=data["status"]["case_stage"],
-                case_status_text=data["status"]["case_status_text"],
-                nature_of_disposal=data["status"]["nature_of_disposal"],
-                judge=data["status"]["judge"],
-                meta_scraped_at=data["meta_scraped_at"],
-                meta_source=data["meta_source"],
-                meta_source_url=data["meta_source_url"],
-                raw_html=data["raw_html"]
-            )
-
-            db.add(case_obj)
-            db.flush()
-
-            for p in data["parties"]:
-                db.add(CaseParty(
-                    case_id=case_obj.id,
-                    is_petitioner=p["is_petitioner"],
-                    name=p["name"],
-                    advocate=p["advocate"],
-                    role=p["role"],
-                    raw_text=p["raw_text"]
-                ))
-
-            for a in data["acts"]:
-                db.add(CaseAct(
-                    case_id=case_obj.id,
-                    act_name=a["act_name"],
-                    section=a["section"],
-                    act_code=a["act_code"]
-                ))
-
-            for h in data["history"]:
-                db.add(CaseHistory(
-                    case_id=case_obj.id,
-                    business_date=h["business_date"],
-                    hearing_date=h["hearing_date"],
-                    purpose=h["purpose"],
-                    stage=h["stage"],
-                    notes=h["notes"],
-                    judge=h["judge"],
-                    source=h["source"]
-                ))
-            
-            for o in data.get("orders", []):
-                db.add(CaseOrder(
-                    case_id=case_obj.id,
-                    order_no=o.get("order_no"),
-                    order_date=o.get("order_date"),
-                    order_details=o.get("order_details"),
-                    pdf_filename=o.get("pdf_filename"),
-                    file_path=o.get("file_path"),
-                    file_size=o.get("file_size")
-                ))
-
-            saved_cases.append(case_obj)
-
-        db.commit()
-
-        return {
-            "saved_count": len(saved_cases),
-            "cases": saved_cases
-        }
-
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+    return {
+        "status": "queued",
+        "total": len(request.case_cnrs),
+        "workers": MAX_MULTI_SAVE_WORKERS
+    }
 
 @router.post("/sidebar-init", response_model=SidebarInitResponse)
 async def sidebar_init(

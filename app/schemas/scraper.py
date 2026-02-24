@@ -40,4 +40,4 @@ class MultiSelectRequest(BaseModel):
     case_indices: List[int]
 
 class MultiSaveRequest(BaseModel):
-    case_indices: List[int]
+    case_cnrs: List[str]
