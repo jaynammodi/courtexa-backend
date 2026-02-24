@@ -22,8 +22,11 @@ import base64
 import asyncio
 import os
 from app.db.session import SessionLocal
+from app.models.workspace import Workspace
+from app.models.workspace_multi_save_job import WorkspaceMultiSaveJob
 
-MAX_MULTI_SAVE_WORKERS = int(os.getenv("MAX_MULTI_SAVE_WORKERS", 5))
+
+MAX_MULTI_SAVE_WORKERS = int(os.getenv("MAX_MULTI_SAVE_WORKERS", 8))
 
 async def perform_multi_save_case(
     cnr: str,
@@ -31,6 +34,12 @@ async def perform_multi_save_case(
     job_id: UUID | None = None,
 ):
     db = SessionLocal()
+
+    job = None
+    if job_id:
+        job = db.query(WorkspaceMultiSaveJob).filter(
+            WorkspaceMultiSaveJob.id == job_id
+        ).first()
 
     try:
         # 🔁 Scrape fresh using CNR
@@ -130,20 +139,31 @@ async def perform_multi_save_case(
 
         db.commit()
 
+        if job:
+            job.completed_cases += 1
+            db.commit()
+
     except Exception:
         db.rollback()
+        if job:
+            job.failed_cases += 1
+            db.commit()
     finally:
+        if job and (job.completed_cases + job.failed_cases >= job.total_cases):
+            job.status = "completed"
+            db.commit()
         db.close()
 
 async def run_multi_save_pool(
     cnrs: list[str],
-    workspace_id: UUID
+    workspace_id: UUID,
+    job_id: UUID
 ):
     semaphore = asyncio.Semaphore(MAX_MULTI_SAVE_WORKERS)
 
     async def worker(cnr: str):
         async with semaphore:
-            await perform_multi_save_case(cnr, workspace_id)
+            await perform_multi_save_case(cnr, workspace_id, job_id)
 
     await asyncio.gather(*(worker(cnr) for cnr in cnrs))
 
@@ -441,18 +461,22 @@ async def get_states(
         token, home_html = await run_in_threadpool(client.get_initial_token)
         
         if not home_html:
-             raise HTTPException(status_code=500, detail="Failed to load eCourts homepage")
+             raise HTTPException(status_code=503, detail="ECOURTS_UNAVAILABLE")
+
+        if not token:
+            raise HTTPException(status_code=503, detail="ECOURTS_UNAVAILABLE")
         
         soup = BeautifulSoup(home_html, 'html.parser')
         state_select = soup.find('select', id='sess_state_code')
         
         if not state_select:
-             raise HTTPException(status_code=500, detail="State dropdown not found")
+             raise HTTPException(status_code=503, detail="ECOURTS_UNAVAILABLE")
              
         states = parse_options_html(str(state_select))
         return {"states": states}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        # raise HTTPException(status_code=500, detail=str(e))
+        raise
 
 @router.get("/meta/districts/{state_code}")
 async def get_districts(
@@ -752,16 +776,15 @@ async def save_case_to_workspace(
 #         raise HTTPException(status_code=500, detail=str(e))
 
 
+
 @router.post("/save-multiple/{session_id}", status_code=202)
 async def save_multiple_cases(
     session_id: str,
     request: MultiSaveRequest,
     workspace_id: UUID = Query(...),
+    db: Session = Depends(get_db),
     current_user: User = Depends(deps.get_current_active_user)
 ):
-    """
-    Concurrently saves multiple cases using CNR refresh flow.
-    """
 
     limits = get_user_plan_limits(current_user)
 
@@ -771,18 +794,76 @@ async def save_multiple_cases(
             detail=f"Save limit exceeded ({limits.multi_save})"
         )
 
-    # 🚀 Launch concurrent pool (non-blocking)
+    # 1️⃣ Create job
+    job = WorkspaceMultiSaveJob(
+        workspace_id=workspace_id,
+        total_cases=len(request.case_cnrs),
+        completed_cases=0,
+        failed_cases=0,
+        status="running"
+    )
+
+    db.add(job)
+    db.commit()
+    db.refresh(job)
+
+    # 2️⃣ Launch async pool
     asyncio.create_task(
         run_multi_save_pool(
             request.case_cnrs,
-            workspace_id
+            workspace_id,
+            job.id
         )
     )
 
     return {
-        "status": "queued",
-        "total": len(request.case_cnrs),
-        "workers": MAX_MULTI_SAVE_WORKERS
+        "job_id": job.id,
+        "total": job.total_cases,
+        "workers": MAX_MULTI_SAVE_WORKERS,
+        "status": job.status
+    }
+
+@router.get("/multi-save-jobs/{job_id}")
+def get_multi_save_job_status(
+    job_id: UUID,
+    workspace: Workspace = Depends(deps.get_current_workspace),
+    db: Session = Depends(get_db),
+):
+    job = db.query(WorkspaceMultiSaveJob).filter(
+        WorkspaceMultiSaveJob.id == job_id,
+        WorkspaceMultiSaveJob.workspace_id == workspace.id
+    ).first()
+
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    return {
+        "total": job.total_cases,
+        "completed": job.completed_cases,
+        "failed": job.failed_cases,
+        "status": job.status
+    }
+
+
+@router.get("/multi-save-active")
+def get_active_multi_save_job(
+    workspace: Workspace = Depends(deps.get_current_workspace),
+    db: Session = Depends(get_db),
+):
+    job = db.query(WorkspaceMultiSaveJob).filter(
+        WorkspaceMultiSaveJob.workspace_id == workspace.id,
+        WorkspaceMultiSaveJob.status == "running"
+    ).order_by(WorkspaceMultiSaveJob.id.desc()).first()
+
+    if not job:
+        return Response(status_code=204)
+
+    return {
+        "job_id": job.id,
+        "total": job.total_cases,
+        "completed": job.completed_cases,
+        "failed": job.failed_cases,
+        "status": job.status
     }
 
 @router.post("/sidebar-init", response_model=SidebarInitResponse)

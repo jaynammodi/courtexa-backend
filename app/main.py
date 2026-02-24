@@ -8,6 +8,7 @@ from app.api.routes import auth, users, workspaces, appointments, availability, 
 
 from app.db.session import SessionLocal
 from app.models.workspace_refresh_job import WorkspaceRefreshJob
+from app.models.workspace_multi_save_job import WorkspaceMultiSaveJob
 from datetime import datetime
 from rich import print
 
@@ -51,11 +52,21 @@ def health_check():
 def cleanup_refresh_jobs_on_startup():
     db = SessionLocal()
     try:
-        running_jobs = db.query(WorkspaceRefreshJob).filter(
+        running_refresh_jobs = db.query(WorkspaceRefreshJob).filter(
             WorkspaceRefreshJob.status == "running"
         ).all()
+        running_save_jobs = db.query(WorkspaceMultiSaveJob).filter(
+            WorkspaceMultiSaveJob.status == "running"
+        ).all()
 
-        for job in running_jobs:
+        for job in running_refresh_jobs:
+            remaining = job.total_cases - (job.completed_cases + job.failed_cases)
+
+            job.status = "aborted"
+            job.failed_cases += max(0, remaining)
+            job.finished_at = datetime.utcnow()
+
+        for job in running_save_jobs:
             remaining = job.total_cases - (job.completed_cases + job.failed_cases)
 
             job.status = "aborted"
@@ -63,7 +74,7 @@ def cleanup_refresh_jobs_on_startup():
             job.finished_at = datetime.utcnow()
 
         db.commit()
-        print(f"[bold cyan]STARTUP[/bold cyan]: Marked {len(running_jobs)} stale refresh jobs as aborted")
+        print(f"[bold cyan]STARTUP[/bold cyan]: Marked {len(running_refresh_jobs)} stale refresh jobs as aborted and {len(running_save_jobs)} stale save jobs as aborted")
 
     except Exception as e:
         db.rollback()
@@ -76,11 +87,21 @@ def cleanup_refresh_jobs_on_startup():
 def cleanup_refresh_jobs_on_shutdown():
     db = SessionLocal()
     try:
-        running_jobs = db.query(WorkspaceRefreshJob).filter(
+        running_refresh_jobs = db.query(WorkspaceRefreshJob).filter(
             WorkspaceRefreshJob.status == "running"
         ).all()
+        running_save_jobs = db.query(WorkspaceMultiSaveJob).filter(
+            WorkspaceMultiSaveJob.status == "running"
+        ).all()
 
-        for job in running_jobs:
+        for job in running_refresh_jobs:
+            remaining = job.total_cases - (job.completed_cases + job.failed_cases)
+
+            job.status = "aborted"
+            job.failed_cases += max(0, remaining)
+            job.finished_at = datetime.utcnow()
+
+        for job in running_save_jobs:
             remaining = job.total_cases - (job.completed_cases + job.failed_cases)
 
             job.status = "aborted"
@@ -88,7 +109,7 @@ def cleanup_refresh_jobs_on_shutdown():
             job.finished_at = datetime.utcnow()
 
         db.commit()
-        print(f"[bold red]SHUTDOWN[/bold red]: Marked {len(running_jobs)} refresh jobs as aborted")
+        print(f"[bold red]SHUTDOWN[/bold red]: Marked {len(running_refresh_jobs)} stale refresh jobs as aborted and {len(running_save_jobs)} stale save jobs as aborted")
 
     except Exception as e:
         db.rollback()

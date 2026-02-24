@@ -71,29 +71,90 @@ class ECourtsClient:
         self._update_token(resp)
         return resp
 
-    def get_initial_token(self) -> Tuple[Optional[str], str]:
-        """Loads homepage to get the first session token."""
-        url = f"{BASE_URL}/?p=casestatus/index"
+    # def get_initial_token(self) -> Tuple[Optional[str], str]:
+    #     """Loads homepage to get the first session token."""
+    #     url = f"{BASE_URL}/?p=casestatus/index"
         
-        # Remove ajax headers for page load
-        page_headers = self.session.headers.copy()
-        if 'X-Requested-With' in page_headers: del page_headers['X-Requested-With']
-        if 'Content-Type' in page_headers: del page_headers['Content-Type']
+    #     # Remove ajax headers for page load
+    #     page_headers = self.session.headers.copy()
+    #     if 'X-Requested-With' in page_headers: del page_headers['X-Requested-With']
+    #     if 'Content-Type' in page_headers: del page_headers['Content-Type']
         
-        print(f"[bold bright_magenta]ECOURTS[/bold bright_magenta]: GET Initial {url}")
-        resp = self.session.get(url, headers=page_headers)
+    #     print(f"[bold bright_magenta]ECOURTS[/bold bright_magenta]: GET Initial {url}")
+    #     resp = self.session.get(url, headers=page_headers)
         
-        # Scrape token
-        soup = BeautifulSoup(resp.text, 'html.parser')
-        token_input = soup.find('input', {'name': 'app_token'})
-        if token_input: 
-            self.current_token = token_input['value']
-        else:
-            match = re.search(r'app_token\s*=\s*["\']([^"\']+)["\']', resp.text)
-            if match: self.current_token = match.group(1)
+    #     # Scrape token
+    #     soup = BeautifulSoup(resp.text, 'html.parser')
+    #     token_input = soup.find('input', {'name': 'app_token'})
+    #     if token_input: 
+    #         self.current_token = token_input['value']
+    #     else:
+    #         match = re.search(r'app_token\s*=\s*["\']([^"\']+)["\']', resp.text)
+    #         if match: self.current_token = match.group(1)
             
-        print(f"[bold bright_magenta]ECOURTS[/bold bright_magenta]: Initial Token: {self.current_token[:10] if self.current_token else 'None'}")
-        return self.current_token, resp.text
+    #     print(f"[bold bright_magenta]ECOURTS[/bold bright_magenta]: Initial Token: {self.current_token[:10] if self.current_token else 'None'}")
+    #     return self.current_token, resp.text
+
+    def get_initial_token(self) -> Tuple[Optional[str], str]:
+        """Loads homepage to get the first session token with retry."""
+
+        url = f"{BASE_URL}/?p=casestatus/index"
+        max_retries = 3
+        delay_seconds = 1
+
+        for attempt in range(1, max_retries + 1):
+
+            # Remove ajax headers for page load
+            page_headers = self.session.headers.copy()
+            page_headers.pop("X-Requested-With", None)
+            page_headers.pop("Content-Type", None)
+
+            print(
+                f"[bold bright_magenta]ECOURTS[/bold bright_magenta]: "
+                f"GET Initial {url} (attempt {attempt}/{max_retries})"
+            )
+
+            resp = self.session.get(url, headers=page_headers)
+
+            soup = BeautifulSoup(resp.text, "html.parser")
+            token_input = soup.find("input", {"name": "app_token"})
+
+            token = None
+
+            if token_input and token_input.get("value"):
+                token = token_input["value"]
+            else:
+                match = re.search(
+                    r'app_token\s*=\s*["\']([^"\']+)["\']',
+                    resp.text
+                )
+                if match:
+                    token = match.group(1)
+
+            if token:
+                self.current_token = token
+                print(
+                    f"[bold bright_magenta]ECOURTS[/bold bright_magenta]: "
+                    f"Initial Token acquired: {token[:10]}"
+                )
+                return token, resp.text
+
+            print(
+                f"[bold yellow]ECOURTS[/bold yellow]: "
+                f"Token missing on attempt {attempt}"
+            )
+
+            if attempt < max_retries:
+                time.sleep(delay_seconds)
+
+        # If all retries fail
+        print(
+            "[bold red]ECOURTS ERROR[/bold red]: "
+            "Failed to obtain initial token after retries"
+        )
+
+        self.current_token = None
+        return None, resp.text
 
     def get_captcha(self) -> bytes:
         """Triggers generation and downloads image."""
