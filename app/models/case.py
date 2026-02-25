@@ -13,7 +13,8 @@ class Case(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     workspace_id = Column(UUID(as_uuid=True), ForeignKey("workspaces.id"), nullable=False, index=True)
 
-    cino = Column(String, unique=True, index=True, nullable=False)
+    cino = Column(String, index=True, nullable=False)
+    # cino = Column(String, unique=True, index=True, nullable=False)
     title = Column(String, nullable=False)
     internal_status = Column(String, default="active", nullable=False) # active, disposed, archived
 

@@ -10,6 +10,7 @@ from app.core.config import settings
 from app.models.user import User
 from app.models.workspace import Workspace
 from app.models.membership import WorkspaceMember, WorkspaceRole
+from app.models.availability import WorkspaceAvailability
 from app.schemas import auth as auth_schemas
 from app.schemas import user as user_schemas
 from slugify import slugify
@@ -61,6 +62,27 @@ def register(
     )
 
     db.add(workspace_member)
+    db.commit()
+
+    # ✅ auto create default availability
+    default_weekly = [
+        {"weekday": 1, "enabled": True, "start": "09:00", "end": "17:00"},
+        {"weekday": 2, "enabled": True, "start": "09:00", "end": "17:00"},
+        {"weekday": 3, "enabled": True, "start": "09:00", "end": "17:00"},
+        {"weekday": 4, "enabled": True, "start": "09:00", "end": "17:00"},
+        {"weekday": 5, "enabled": True, "start": "09:00", "end": "17:00"},
+        {"weekday": 6, "enabled": False, "start": "09:00", "end": "17:00"},
+        {"weekday": 0, "enabled": False, "start": "09:00", "end": "17:00"},
+    ]
+
+    workspace_availability = WorkspaceAvailability(
+        workspace_id=workspace.id,
+        slot_minutes=30,
+        buffer_minutes=0,
+        weekly=default_weekly,
+        blackout_dates=[]
+    )
+    db.add(workspace_availability)
     db.commit()
 
     return user
@@ -122,3 +144,23 @@ def logout(response: Response):
         path="/",
     )
     return {"message": "Logged out"}
+
+# method to fetch lawyer details from lawyer slug
+@router.get("/lawyers/{slug}", response_model=user_schemas.User)
+def get_lawyer_details(
+    slug: str,
+    db: Session = Depends(deps.get_db),
+) -> Any:
+    workspace = db.query(Workspace).filter(Workspace.slug == slug).first()
+    if not workspace:
+        raise HTTPException(
+            status_code=404,
+            detail="Workspace not found",
+        )
+    user = db.query(User).filter(User.id == workspace.owner_id).first()
+    if not user:
+        raise HTTPException(
+            status_code=404,
+            detail="Lawyer not found",
+        )
+    return user

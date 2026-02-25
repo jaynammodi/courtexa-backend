@@ -514,13 +514,13 @@ async def get_complexes(
 @router.post("/save/{session_id}")
 async def save_case_to_workspace(
     session_id: str,
-    workspace_id: UUID,
     db: Session = Depends(get_db),
-    current_user: User = Depends(deps.get_current_active_user)
+    workspace: Workspace = Depends(deps.get_current_workspace)
 ):
     """
     Saves the scraped case (from session) to the database under the given workspace.
     """
+    workspace_id = workspace.id
     try:
         # 1. Fetch Result
         result = await fetch_results(session_id)
@@ -781,10 +781,11 @@ async def save_case_to_workspace(
 async def save_multiple_cases(
     session_id: str,
     request: MultiSaveRequest,
-    workspace_id: UUID = Query(...),
     db: Session = Depends(get_db),
+    workspace: Workspace = Depends(deps.get_current_workspace),
     current_user: User = Depends(deps.get_current_active_user)
 ):
+    workspace_id = workspace.id
 
     limits = get_user_plan_limits(current_user)
 

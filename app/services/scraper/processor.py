@@ -346,11 +346,10 @@ def parse_full_case_data(html_content):
                 continue
             
             # Order Number | Date | Order Details (Link)
-            print(normalize_date(clean_text(cols[1].text)))
             o_row = {
                 "order_no": clean_text(cols[0].text),
                 "order_date": normalize_date(clean_text(cols[1].text)),
-                "order_details": clean_text(cols[2].text),
+                "details": clean_text(cols[2].text),
                 "pdf_link_args": None
             }
             
