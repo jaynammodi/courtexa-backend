@@ -183,6 +183,7 @@ def get_workspace_hearings(
             
             # Summary fields
             "cino": c.cino,
+            "registration_number": c.registration_number,
             "petitioner": c.summary_petitioner,
             "respondent": c.summary_respondent,
             "case_type": c.case_type,

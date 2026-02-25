@@ -9,6 +9,7 @@ from app.api.routes import auth, users, workspaces, appointments, availability, 
 from app.db.session import SessionLocal
 from app.models.workspace_refresh_job import WorkspaceRefreshJob
 from app.models.workspace_multi_save_job import WorkspaceMultiSaveJob
+from app.models.case import Case
 from datetime import datetime
 from rich import print
 
@@ -53,10 +54,15 @@ def cleanup_refresh_jobs_on_startup():
     db = SessionLocal()
     try:
         running_refresh_jobs = db.query(WorkspaceRefreshJob).filter(
-            WorkspaceRefreshJob.status == "running"
+            WorkspaceRefreshJob.status != "completed"
         ).all()
+
         running_save_jobs = db.query(WorkspaceMultiSaveJob).filter(
-            WorkspaceMultiSaveJob.status == "running"
+            WorkspaceMultiSaveJob.status != "completed"
+        ).all()
+
+        pending_sync_cases = db.query(Case).filter(
+            Case.sync_status != "fresh" and Case.sync_status != "error" and Case.sync_status != "never" and Case.sync_status != "stale"
         ).all()
 
         for job in running_refresh_jobs:
@@ -72,6 +78,10 @@ def cleanup_refresh_jobs_on_startup():
             job.status = "aborted"
             job.failed_cases += max(0, remaining)
             job.finished_at = datetime.utcnow()
+
+        for case in pending_sync_cases:
+            case.sync_status = "error"
+            case.sync_error_message = "Server shut down"
 
         db.commit()
         print(f"[bold cyan]STARTUP[/bold cyan]: Marked {len(running_refresh_jobs)} stale refresh jobs as aborted and {len(running_save_jobs)} stale save jobs as aborted")
@@ -88,10 +98,14 @@ def cleanup_refresh_jobs_on_shutdown():
     db = SessionLocal()
     try:
         running_refresh_jobs = db.query(WorkspaceRefreshJob).filter(
-            WorkspaceRefreshJob.status == "running"
+            WorkspaceRefreshJob.status != "completed"
         ).all()
         running_save_jobs = db.query(WorkspaceMultiSaveJob).filter(
-            WorkspaceMultiSaveJob.status == "running"
+            WorkspaceMultiSaveJob.status != "completed"
+        ).all()
+
+        pending_sync_cases = db.query(Case).filter(
+            Case.sync_status != "fresh" and Case.sync_status != "error" and Case.sync_status != "never" and Case.sync_status != "stale"
         ).all()
 
         for job in running_refresh_jobs:
@@ -107,6 +121,10 @@ def cleanup_refresh_jobs_on_shutdown():
             job.status = "aborted"
             job.failed_cases += max(0, remaining)
             job.finished_at = datetime.utcnow()
+
+        for case in pending_sync_cases:
+            case.sync_status = "error"
+            case.sync_error_message = "Server shut down"
 
         db.commit()
         print(f"[bold red]SHUTDOWN[/bold red]: Marked {len(running_refresh_jobs)} stale refresh jobs as aborted and {len(running_save_jobs)} stale save jobs as aborted")

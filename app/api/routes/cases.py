@@ -353,19 +353,19 @@ async def refresh_all_cases(
     twelve_hours_ago = now - timedelta(hours=12)
     today = date.today()
 
-    # cases = db.query(Case).filter(
-    #     Case.workspace_id == workspace.id,
-    #     Case.internal_status == "active",
-    #     or_(
-    #         Case.sync_last_synced_at == None,
-    #         Case.sync_last_synced_at < twelve_hours_ago
-    #     ),
-    #     Case.next_hearing_date != None,
-    #     Case.next_hearing_date <= today
-    # ).all()
     cases = db.query(Case).filter(
         Case.workspace_id == workspace.id,
+        Case.internal_status == "active",
+        or_(
+            Case.sync_last_synced_at == None,
+            Case.sync_last_synced_at < twelve_hours_ago
+        ),
+        Case.next_hearing_date != None,
+        Case.next_hearing_date <= today
     ).all()
+    # cases = db.query(Case).filter(
+    #     Case.workspace_id == workspace.id,
+    # ).all()
 
     if not cases:
         return {"status": "no_cases"}

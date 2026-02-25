@@ -155,6 +155,7 @@ class HearingResponse(BaseModel):
     
     # Case Summary Fields
     cino: Optional[str] = None
+    registration_number: Optional[str] = None
     petitioner: Optional[str] = None
     respondent: Optional[str] = None
     case_type: Optional[str] = None
