@@ -70,11 +70,9 @@ def parse_kv_table(soup, css_class):
         return {}
 
     for row in rows:
-        cells = row.find_all('td')
+        cells = row.find_all(['th', 'td'])
+        
         # 4-column layout: Key | Value | Key | Value
-        # if len(cells) == 4:
-        #     data[clean_text(cells[0].text).rstrip(':')] = clean_text(cells[1].text)
-        #     data[clean_text(cells[2].text).rstrip(':')] = clean_text(cells[3].text)
         if len(cells) == 4:
             k1 = clean_text(cells[0].text).rstrip(':')
             v1 = maybe_normalize_value(k1, cells[1].text)
@@ -84,17 +82,12 @@ def parse_kv_table(soup, css_class):
 
             data[k1] = v1
             data[k2] = v2
+            
         # 2-column layout: Key | Value
-        # elif len(cells) == 2:
-        #     data[clean_text(cells[0].text).rstrip(':')] = clean_text(cells[1].text)
         elif len(cells) == 2:
             k = clean_text(cells[0].text).rstrip(':')
             v = maybe_normalize_value(k, cells[1].text)
             data[k] = v
-        # Special case for "Court number and Judge" which often spans colspan
-        elif len(cells) == 1:
-             # Check if it's a header or a value
-             pass 
              
     return data
 
@@ -121,19 +114,45 @@ def parse_simple_table(soup, css_class, headers):
             data.append(row_dict)
     return data
 
-def parse_party_text(soup, css_class):
+def parse_party_text(soup, css_class, header_text):
     """Parses Petitioner/Respondent text blocks."""
+    # OLD LOGIC (Fallback)
     table = soup.select_one(f'.{css_class}')
     if not table:
         table = soup.find('table', class_=css_class)
     
-    if not table: return "N/A"
-    
-    # Replace <br> with newlines
-    for br in table.find_all("br"):
-        br.replace_with("\n")
+    if table:
+        for br in table.find_all("br"):
+            br.replace_with("\n")
+        return clean_text(table.get_text(separator=" ", strip=True))
+
+    # NEW LOGIC: Look for target header and get all text until next heading
+    # e.g., <h3>Petitioner and Advocate</h3> ... loosely dumped text ...
+    headers = soup.find_all(['h3', 'h4', 'h2'])
+    target_header = None
+    for h in headers:
+        if header_text.lower() in clean_text(h.text).lower():
+            target_header = h
+            break
+            
+    if not target_header:
+        return "N/A"
         
-    return clean_text(table.get_text(separator=" ", strip=True))
+    extracted_texts = []
+    sibling = target_header.next_sibling
+    while sibling:
+        if sibling.name in ['h2', 'h3', 'h4', 'table', 'div']: 
+            break  # Reached the next section
+        
+        if sibling.name == 'br':
+            extracted_texts.append("\n")
+        elif sibling.string:
+            extracted_texts.append(sibling.string)
+            
+        sibling = sibling.next_sibling
+        
+    result = "".join(extracted_texts).strip()
+    return clean_text(result) if result else "N/A"
 
 def parse_history_row(cells, business_text=""):
     """Helper to structure a single history row."""
@@ -288,8 +307,8 @@ def parse_case_metadata(html_content):
         "court_heading": court_heading,
         "case_details": parse_kv_table(soup, "case_details_table"),
         "status": parse_kv_table(soup, "case_status_table"),
-        "petitioner": parse_party_text(soup, "Petitioner_Advocate_table"),
-        "respondent": parse_party_text(soup, "Respondent_Advocate_table"),
+        "petitioner": parse_party_text(soup, "Petitioner_Advocate_table", "Petitioner and Advocate"),
+        "respondent": parse_party_text(soup, "Respondent_Advocate_table", "Respondent and Advocate"),
         "acts": parse_simple_table(soup, "acts_table", ["act", "section"]),
         "fir_details": parse_kv_table(soup, "FIR_details_table"),
     }
@@ -349,7 +368,7 @@ def parse_full_case_data(html_content):
             o_row = {
                 "order_no": clean_text(cols[0].text),
                 "order_date": normalize_date(clean_text(cols[1].text)),
-                "details": clean_text(cols[2].text),
+                # "details": clean_text(cols[2].text),
                 "pdf_link_args": None
             }
             
@@ -365,6 +384,7 @@ def parse_full_case_data(html_content):
             
             if best_args:
                 o_row['pdf_link_args'] = best_args
+                o_row["order_details"] = link.text.strip()
             
             data["orders"].append(o_row)
 
