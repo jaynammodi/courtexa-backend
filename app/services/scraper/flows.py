@@ -69,7 +69,7 @@ async def start_session(search_mode: str, payload: Dict[str, Any]) -> str:
         await session.save()
         raise e
     
-    if not token:
+    if token is None:
         session.set_error("Failed to obtain initial token")
         await session.save()
         raise TokenError("Failed to obtain initial token from eCourts")
@@ -115,7 +115,7 @@ async def submit_captcha(session_id: str, captcha_code: str):
     while attempts < max_attempts:
         attempts += 1
         try:
-            if session.app_token:
+            if session.app_token is not None:
                 client.current_token = session.app_token
 
             print(f"[bold bright_magenta]ECOURTS[/bold bright_magenta]: submit_captcha Attempt {attempts} | Mode: {mode}")
@@ -165,10 +165,11 @@ async def submit_captcha(session_id: str, captcha_code: str):
             result_json = response.json()
 
             # Token refresh
-            new_token = result_json.get('app_token')
-            if new_token and new_token != session.app_token:
-                session.app_token = new_token
-                await session.save()
+            if 'app_token' in result_json:
+                new_token = result_json['app_token']
+                if new_token != session.app_token:
+                    session.app_token = new_token
+                    await session.save()
 
             if "Invalid Captcha" in str(result_json):
                 raise CaptchaError("Invalid Captcha")

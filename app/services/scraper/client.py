@@ -26,9 +26,14 @@ HEADERS = {
 def extract_token_from_json(response):
     try:
         data = response.json()
-        token = data.get('token') or data.get('app_token')
-        if token:
-            print(f"[bold magenta]TOKEN: Extracted new token: {token}[/bold magenta]")
+        if 'token' in data:
+            token = data['token']
+        elif 'app_token' in data:
+            token = data['app_token']
+        else:
+            return None
+            
+        print(f"[bold magenta]TOKEN: Extracted new token: '{token}'[/bold magenta]")
         return token
     except:
         return None
@@ -51,21 +56,21 @@ class ECourtsClient:
     def _update_token(self, response):
         """Internal method to update token if present in response."""
         new_token = extract_token_from_json(response)
-        if new_token:
+        if new_token is not None:
             self.current_token = new_token
-            print(f"[bold green]TOKEN: Token updated in client to: {self.current_token}[/bold green]")
+            print(f"[bold green]TOKEN: Token updated in client to: '{self.current_token}'[/bold green]")
 
     def _post(self, endpoint, data):
         """Wrapper for POST requests with auto token injection and update."""
         url = f"{BASE_URL}/?p={endpoint}"
         
         # Inject current token
-        if 'app_token' not in data and self.current_token:
+        if 'app_token' not in data and self.current_token is not None:
             data['app_token'] = self.current_token
         if 'ajax_req' not in data:
             data['ajax_req'] = 'true'
 
-        print(f"[bold bright_magenta]ECOURTS[/bold bright_magenta]: POST {endpoint} | Token: {data.get('app_token')[:10] if data.get('app_token') else 'None'}")
+        print(f"[bold bright_magenta]ECOURTS[/bold bright_magenta]: POST {endpoint} | Token: '{data.get('app_token')[:10] if data.get('app_token') is not None else 'None'}'")
         
         resp = self.session.post(url, data=data)
         self._update_token(resp)
@@ -116,26 +121,27 @@ class ECourtsClient:
 
             resp = self.session.get(url, headers=page_headers)
 
+            # print(resp.text)
             soup = BeautifulSoup(resp.text, "html.parser")
             token_input = soup.find("input", {"name": "app_token"})
 
             token = None
 
-            if token_input and token_input.get("value"):
+            if token_input is not None and "value" in token_input.attrs:
                 token = token_input["value"]
             else:
                 match = re.search(
-                    r'app_token\s*=\s*["\']([^"\']+)["\']',
+                    r'app_token\s*=\s*["\']([^"\']*)["\']',
                     resp.text
                 )
                 if match:
                     token = match.group(1)
 
-            if token:
+            if token is not None:
                 self.current_token = token
                 print(
                     f"[bold bright_magenta]ECOURTS[/bold bright_magenta]: "
-                    f"Initial Token acquired: {token[:10]}"
+                    f"Initial Token acquired: '{token[:10]}'"
                 )
                 return token, resp.text
 
